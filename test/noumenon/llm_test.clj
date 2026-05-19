@@ -211,7 +211,50 @@
           (is false "expected exception")
           (catch clojure.lang.ExceptionInfo e
             (is (re-find #"NOUMENON_LLM_BASE_URL" (.getMessage e)))
-            (is (= "NOUMENON_LLM_BASE_URL" (:env-var (ex-data e))))))))))
+            (is (= "NOUMENON_LLM_BASE_URL" (:env-var (ex-data e))))
+            (is (= 400 (:status (ex-data e)))
+                "Missing config is a 4xx user error, not a 500 server error")))))))
+
+(deftest make-messages-fn-from-opts-invalid-base-url
+  (testing "NOUMENON_LLM_BASE_URL must be an absolute URL with scheme+host.
+            Saving a bare alias like 'claude' used to slip through validation
+            and only fail deep inside http-kit with 'host is null:
+            claude/v1/messages', which the daemon rewrote as a generic 500
+            'Internal server error'. The launcher then showed the user
+            'Error: Internal server error' with no clue that the credentials
+            file was at fault. Validate at config-resolution time so the
+            error names the env var and the offending value."
+    (System/clearProperty "noumenon.allow-file-credentials")
+    (doseq [bad ["claude" "anthropic" "api.anthropic.com" "/v1/messages"
+                 "http:" "ftp://example.com" "://example.com"]]
+      (with-env {"NOUMENON_LLM_BASE_URL" bad
+                 "NOUMENON_LLM_API_KEY"  "k"
+                 "NOUMENON_LLM_MODEL"    "m"}
+        (fn []
+          (try
+            (llm/make-messages-fn-from-opts {})
+            (is false (str "expected exception for invalid base-url: " (pr-str bad)))
+            (catch clojure.lang.ExceptionInfo e
+              (is (re-find #"NOUMENON_LLM_BASE_URL" (.getMessage e))
+                  (str "error should name the env var; got: " (.getMessage e)))
+              (is (= "NOUMENON_LLM_BASE_URL" (:env-var (ex-data e))))
+              (is (= 400 (:status (ex-data e)))
+                  "Bad credentials are a 4xx, not 500"))))))))
+
+(deftest make-messages-fn-from-opts-valid-base-urls-pass-validation
+  (testing "valid http(s) URLs survive validation — anchor for the bad-url test"
+    (System/clearProperty "noumenon.allow-file-credentials")
+    (doseq [good ["https://api.anthropic.com"
+                  "https://api.anthropic.com/"
+                  "http://localhost:8080"
+                  "https://openrouter.ai/api/v1"
+                  "https://example.com/path/segments"]]
+      (with-env {"NOUMENON_LLM_BASE_URL" good
+                 "NOUMENON_LLM_API_KEY"  "k"
+                 "NOUMENON_LLM_MODEL"    "m"}
+        (fn []
+          (is (some? (llm/make-messages-fn-from-opts {}))
+              (str "expected " (pr-str good) " to pass validation")))))))
 
 (deftest make-messages-fn-from-opts-missing-api-key
   (testing "missing NOUMENON_LLM_API_KEY produces a clean error"
@@ -223,7 +266,9 @@
           (is false "expected exception")
           (catch clojure.lang.ExceptionInfo e
             (is (re-find #"NOUMENON_LLM_API_KEY" (.getMessage e)))
-            (is (= "NOUMENON_LLM_API_KEY" (:env-var (ex-data e))))))))))
+            (is (= "NOUMENON_LLM_API_KEY" (:env-var (ex-data e))))
+            (is (= 400 (:status (ex-data e)))
+                "Missing config is a 4xx, not 500")))))))
 
 (deftest make-messages-fn-from-opts-missing-model
   (testing "missing model produces a clean error mentioning --model"
@@ -236,7 +281,9 @@
           (is false "expected exception")
           (catch clojure.lang.ExceptionInfo e
             (is (re-find #"No model selected" (.getMessage e)))
-            (is (re-find #"--model" (.getMessage e)))))))))
+            (is (re-find #"--model" (.getMessage e)))
+            (is (= 400 (:status (ex-data e)))
+                "Missing config is a 4xx, not 500")))))))
 
 (deftest make-messages-fn-from-opts-opt-overrides-env
   (testing "opts :model overrides NOUMENON_LLM_MODEL"

@@ -64,6 +64,21 @@
   [base-url]
   (some-> base-url str/trim (str/replace #"/+$" "")))
 
+(defn- valid-base-url?
+  "True when base-url parses as an absolute URL with an http(s) scheme and
+   a non-blank host. Rejects bare aliases like 'claude' that would otherwise
+   slip through and only fail deep inside http-kit with 'host is null'."
+  [base-url]
+  (try
+    (let [uri    (URI. base-url)
+          scheme (some-> (.getScheme uri) str/lower-case)
+          host   (.getHost uri)]
+      (and scheme
+           (contains? #{"http" "https"} scheme)
+           (some? host)
+           (not (str/blank? host))))
+    (catch Exception _ false)))
+
 (defn resolve-llm-config
   "Resolve {:base-url :api-key :model} from env, then ~/.noumenon/credentials
    if the file-fallback gate is open. Returns the map; callers that need
@@ -86,22 +101,39 @@
        "(file is consulted automatically when present)."))
 
 (defn- require-base-url! [base-url]
-  (when (str/blank? base-url)
-    (throw (ex-info (missing-var-message "NOUMENON_LLM_BASE_URL")
-                    {:env-var "NOUMENON_LLM_BASE_URL"})))
-  base-url)
+  (cond
+    (str/blank? base-url)
+    (let [msg (missing-var-message "NOUMENON_LLM_BASE_URL")]
+      (throw (ex-info msg {:env-var "NOUMENON_LLM_BASE_URL"
+                           :status 400
+                           :message msg})))
+
+    (not (valid-base-url? base-url))
+    (let [msg (str "Invalid NOUMENON_LLM_BASE_URL: " (pr-str base-url)
+                   ". Expected an absolute URL with scheme and host "
+                   "(e.g. https://api.anthropic.com).")]
+      (throw (ex-info msg {:env-var "NOUMENON_LLM_BASE_URL"
+                           :status 400
+                           :message msg
+                           :value base-url})))
+
+    :else base-url))
 
 (defn- require-api-key! [api-key]
   (when (str/blank? api-key)
-    (throw (ex-info (missing-var-message "NOUMENON_LLM_API_KEY")
-                    {:env-var "NOUMENON_LLM_API_KEY"})))
+    (let [msg (missing-var-message "NOUMENON_LLM_API_KEY")]
+      (throw (ex-info msg {:env-var "NOUMENON_LLM_API_KEY"
+                           :status 400
+                           :message msg}))))
   api-key)
 
 (defn- require-model! [model]
   (when (str/blank? model)
-    (throw (ex-info (str "No model selected. Pass --model, set NOUMENON_LLM_MODEL, "
-                         "or add NOUMENON_LLM_MODEL=<id> to ~/.noumenon/credentials.")
-                    {:env-var "NOUMENON_LLM_MODEL"})))
+    (let [msg (str "No model selected. Pass --model, set NOUMENON_LLM_MODEL, "
+                   "or add NOUMENON_LLM_MODEL=<id> to ~/.noumenon/credentials.")]
+      (throw (ex-info msg {:env-var "NOUMENON_LLM_MODEL"
+                           :status 400
+                           :message msg}))))
   model)
 
 (defn- base-url-host

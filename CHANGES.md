@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.3
+
 ### Fixes
 
 - **`noum ask` and `noum introspect` now report a clean 400 when `NOUMENON_LLM_BASE_URL` isn't a real URL** — saving a bare alias like `claude` in `~/.noumenon/credentials` (instead of `https://api.anthropic.com`) used to slip past the existing blank-check in `llm/require-base-url!`, so the value flowed all the way into the http-kit call that builds `<base-url>/v1/messages`. http-kit then failed URL parsing with `host is null: claude/v1/messages`, the daemon's route catch-all rewrote that as a generic 500, and the launcher displayed `Error: Internal server error` — nothing pointing at credentials. Every command that touches the LLM (`ask`, `introspect`, `analyze`, `synthesize`, `enrich --analyze`, `digest`, `benchmark`, `update --analyze`) shared this failure mode because they all route through `llm/make-messages-fn-from-opts`. `valid-base-url?` now parses the value as a `java.net.URI` and requires an http(s) scheme plus a non-blank host; `require-base-url!`, `require-api-key!`, and `require-model!` all tag their ex-info with `:status 400` so the HTTP route catch-all serves them as `400 "Invalid NOUMENON_LLM_BASE_URL: \"claude\". Expected an absolute URL with scheme and host (e.g. https://api.anthropic.com)."` instead of swallowing the message into a 500.

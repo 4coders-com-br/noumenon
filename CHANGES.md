@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0
+
 ### BREAKING CHANGES
 
 - **LLM configuration collapsed to two env vars (plus one optional)** — Noumenon used to carry a multi-provider router: an EDN-encoded provider map (`NOUMENON_LLM_PROVIDERS_EDN`), a default-provider selector (`NOUMENON_DEFAULT_PROVIDER`), per-provider env keys (`NOUMENON_ZAI_TOKEN`, `ANTHROPIC_API_KEY`), a runtime-mode toggle (`NOUMENON_RUNTIME_MODE`), an HTTPS allowlist (`NOUMENON_LLM_BASE_URL_ALLOWLIST_EDN`), model aliases (`sonnet`/`haiku`/`opus`), a `--provider` flag on every LLM-touching subcommand, `llm-providers`/`llm-models` CLI subcommands, and matching `noumenon_llm_providers`/`noumenon_llm_models` MCP tools. All of that is gone.

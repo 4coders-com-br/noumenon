@@ -2,6 +2,11 @@
   (:require [clojure.java.shell :as shell]
             [clojure.test :refer [deftest is testing]]
             [datomic.client.api :as d]
+            [noumenon.analyze :as analyze]
+            [noumenon.calls :as calls]
+            [noumenon.files :as files]
+            [noumenon.git :as git]
+            [noumenon.imports :as imports]
             [noumenon.sync :as sync]
             [noumenon.test-helpers :as th]))
 
@@ -127,3 +132,51 @@
           (let [branches (d/q '[:find ?n :where [?b :branch/name ?n]] (d/db conn))]
             (is (= #{"feat/branch-aware-graph" "main"} (into #{} (map first) branches))
                 "both branches are recorded in the DB")))))))
+
+(deftest update-repo!-invokes-progress-fn-through-pipeline-stages
+  (testing "When sync/update-repo! is called with :progress-fn, the callback
+            must be threaded into the underlying stages (git/import-commits!,
+            imports/enrich-repo!, analyze/analyze-repo!) so the daemon can
+            stream SSE progress to clients. Without this plumbing, /api/update
+            looks identical to a hang during a fresh sync + --analyze pass:
+            the HTTP request blocks for minutes with no events."
+    (let [conn         (th/make-test-conn "update-repo-progress")
+          repo-path    "/tmp/nonexistent-noumenon-progress-test"
+          repo-uri     repo-path
+          import-pfn   (atom nil)
+          enrich-pfn   (atom nil)
+          analyze-pfn  (atom nil)]
+      (with-redefs [git/head-sha               (constantly "abc123def456789012345678901234567890abcd")
+                    git/current-branch-name    (constantly "main")
+                    git/classify-branch-kind   (constantly :trunk)
+                    git/import-commits!        (fn [_conn _repo _uri & [progress-fn]]
+                                                 (reset! import-pfn progress-fn)
+                                                 {:commits-imported 0 :commits-skipped 0 :elapsed-ms 0})
+                    files/import-files!        (fn [& _]
+                                                 {:files-imported 0 :files-skipped 0 :dirs-imported 0})
+                    imports/enrich-repo!       (fn [_conn _repo opts]
+                                                 (reset! enrich-pfn (:progress-fn opts))
+                                                 {:files-processed 0 :imports-resolved 0})
+                    analyze/analyze-repo!      (fn [_conn _repo _invoke opts]
+                                                 (reset! analyze-pfn (:progress-fn opts))
+                                                 {:files-analyzed 0 :files-promoted 0
+                                                  :files-skipped 0 :files-errored 0
+                                                  :files-parse-errored 0
+                                                  :total-usage {:input-tokens 0 :output-tokens 0
+                                                                :cost-usd 0 :duration-ms 0}})
+                    calls/resolve-calls!       (fn [_conn] {:resolved 0})]
+        (sync/update-repo! conn repo-path repo-uri
+                           {:concurrency 1
+                            :analyze-concurrency 1
+                            :analyze?    true
+                            :invoke-llm  (fn [_] {:text "{}" :usage {}})
+                            :meta-db     (d/db conn)
+                            :model-id    "stub"
+                            :provider    "stub"
+                            :progress-fn (fn [_evt] nil)}))
+      (is (fn? @import-pfn)
+          "git/import-commits! must receive a non-nil progress-fn forwarded from update-repo!")
+      (is (fn? @enrich-pfn)
+          "imports/enrich-repo! must receive a non-nil :progress-fn forwarded from update-repo!")
+      (is (fn? @analyze-pfn)
+          "analyze/analyze-repo! must receive a non-nil :progress-fn forwarded from update-repo!"))))

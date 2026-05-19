@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixes
+
+- **`noum update` and `noum watch` now stream progress instead of going silent** — both commands posted to `/api/update` without SSE, and the server's `handle-update` had no streaming path, so the launcher's HTTP request blocked until the daemon finished a fresh import + LLM analysis pass (potentially many minutes) with no per-file feedback. The output looked indistinguishable from a hang: only the JRE-selection line printed, then dead silence until completion. The server now routes `handle-update` through `mw/with-sse` (mirroring `/api/import` / `/api/analyze` / `/api/enrich` / `/api/digest`) and threads a `:progress-fn` through `sync/update-repo!` into `git/import-commits!`, `imports/enrich-repo!`, and `analyze/analyze-repo!`. The launcher adds `"update"` to its `progress-commands` set so it requests SSE and renders a TUI spinner/bar, and `watch-loop!` now builds a fresh progress handler per polling iteration so each in-flight iteration shows live progress instead of going dark for the duration of the call.
+
 ## 0.12.1
 
 ### Fixes

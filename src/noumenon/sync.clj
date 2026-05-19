@@ -430,9 +430,12 @@
 
 (defn- run-pipeline-stages!
   "Import commits + files, run optional enrich/analyze/calls.
+   When `opts` has `:progress-fn`, it is threaded into the underlying
+   stages so the daemon can stream SSE events to clients.
    Returns {:git-r :files-r :reclass-n :issues-n :post-r :analyze-r :calls-r}."
   [conn repo-path repo-uri opts fresh? changes]
-  (let [git-r     (git/import-commits! conn repo-path repo-uri)
+  (let [progress-fn (:progress-fn opts)
+        git-r     (git/import-commits! conn repo-path repo-uri progress-fn)
         reclass-n (reclassify-commits! conn)
         _         (when (pos? reclass-n)
                     (log! (str "Reclassified " reclass-n " commit kinds")))
@@ -443,7 +446,9 @@
         selector  (select-keys opts [:path :include :exclude :lang])
         post-r    (when (enrich-needed? fresh? changes)
                     (imports/enrich-repo! conn repo-path
-                                          (assoc selector :concurrency (or (:concurrency opts) 8))))
+                                          (assoc selector
+                                                 :concurrency (or (:concurrency opts) 8)
+                                                 :progress-fn progress-fn)))
         analyze-r (when-let [invoke-llm (:invoke-llm opts)]
                     (analyze/analyze-repo!
                      conn repo-path invoke-llm
@@ -452,7 +457,8 @@
                             :model-id (:model-id opts)
                             :provider (:provider opts)
                             :concurrency (or (:analyze-concurrency opts) 3)
-                            :min-delay-ms 0)))
+                            :min-delay-ms 0
+                            :progress-fn progress-fn)))
         calls-r   (when (or post-r analyze-r)
                     (calls/resolve-calls! conn))]
     {:git-r git-r :files-r files-r :reclass-n reclass-n :issues-n issues-n
@@ -481,7 +487,9 @@
      :invoke-llm  — LLM invoke function (required if :analyze? true)
      :meta-db     — meta database value (required if :analyze? true)
      :model-id    — model identifier for analysis
-     :concurrency — worker count for analyze/enrich"
+     :concurrency — worker count for analyze/enrich
+     :progress-fn — optional 1-arg fn that receives {:current :total :message}
+                    events from the underlying stages (used by SSE)"
   [conn repo-path repo-uri opts]
   (auto-sync-p4! repo-path)
   (let [start-ms (System/currentTimeMillis)

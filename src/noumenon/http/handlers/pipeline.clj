@@ -116,22 +116,28 @@
           result     (delta/update-delta! conn repo-path basis-sha delta-opts)]
       (mw/ok result))))
 
+(defn- run-update [{:keys [conn meta-db repo-path]} params config progress-fn]
+  (let [base-opts (assoc (select-keys params [:path :include :exclude :lang])
+                         :concurrency 8
+                         :progress-fn progress-fn)
+        opts      (if (:analyze params)
+                    (let [{:keys [prompt-fn model-id provider]}
+                          (llm/wrap-as-prompt-fn-from-opts
+                           (mw/resolve-model params config))]
+                      (assoc base-opts
+                             :analyze? true
+                             :meta-db meta-db :model-id model-id
+                             :provider provider :invoke-llm prompt-fn))
+                    base-opts)]
+    (sync/update-repo! conn repo-path repo-path opts)))
+
 (defn handle-update [request config]
   (let [params (mw/parse-json-body request)]
     (mw/with-repo params (:db-dir config)
-      (fn [{:keys [conn meta-db repo-path]}]
-        (let [opts (if (:analyze params)
-                     (let [{:keys [prompt-fn model-id provider]}
-                           (llm/wrap-as-prompt-fn-from-opts
-                            (mw/resolve-model params config))]
-                       (assoc (select-keys params [:path :include :exclude :lang])
-                              :concurrency 8 :analyze? true
-                              :meta-db meta-db :model-id model-id
-                              :provider provider :invoke-llm prompt-fn))
-                     (assoc (select-keys params [:path :include :exclude :lang])
-                            :concurrency 8))
-              result (sync/update-repo! conn repo-path repo-path opts)]
-          (mw/ok result))))))
+      (fn [ctx]
+        (if (mw/wants-sse? request)
+          (mw/with-sse request (partial run-update ctx params config))
+          (mw/ok (run-update ctx params config nil)))))))
 
 (def ^:private synth-max-tokens
   "Synth output (long architectural component descriptions) routinely

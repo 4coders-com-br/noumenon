@@ -922,3 +922,40 @@
       (is (some #(= 16384 (:max-tokens %)) @seen)
           (str "digest must build a prompt-fn with :max-tokens 16384 "
                "for the synth step; saw: " (pr-str @seen))))))
+
+(deftest http-update-streams-sse-and-threads-progress-fn
+  (testing "POST /api/update with Accept: text/event-stream must route
+            through mw/with-sse (like /api/import, /api/analyze,
+            /api/enrich, /api/digest) and thread a :progress-fn into
+            sync/update-repo! so daemon-mode `noum update <repo>
+            --analyze` streams events instead of blocking for minutes
+            with no output. Without this, the launcher's HTTP POST sits
+            silent for the duration of a fresh import + LLM analysis
+            pass — indistinguishable from a hang."
+    (let [repo-path     (make-tmp-git-repo! "update-sse")
+          db-dir        (str "/tmp/noumenon-update-sse-" (System/currentTimeMillis))
+          handler       (http/make-handler {:db-dir db-dir})
+          update-opts   (atom nil)
+          with-sse-runs (atom 0)]
+      (handler (post-with-body "/api/import" {:repo_path repo-path}))
+      (with-redefs [noumenon.http.middleware/with-sse
+                    (fn [_request body-fn]
+                      (swap! with-sse-runs inc)
+                      (let [progress-fn (fn [_evt] nil)]
+                        (body-fn progress-fn))
+                      {:status 200 :body ""})
+                    noumenon.sync/update-repo!
+                    (fn [_conn _repo _uri opts]
+                      (reset! update-opts opts)
+                      {:status :synced :head-sha "abc" :elapsed-ms 0})
+                    noumenon.llm/wrap-as-prompt-fn-from-opts
+                    (fn [_] {:prompt-fn (fn [_] {:text "{}" :usage {}})
+                             :model-id "stub" :provider "stub"})]
+        (handler (-> (post-with-body "/api/update"
+                                     {:repo_path repo-path :analyze true})
+                     (assoc-in [:headers "accept"] "text/event-stream"))))
+      (is (pos? @with-sse-runs)
+          "handle-update must invoke with-sse when client requests text/event-stream")
+      (is (fn? (:progress-fn @update-opts))
+          (str "handle-update must thread a :progress-fn into sync/update-repo! "
+               "during SSE; saw opts: " (pr-str @update-opts))))))

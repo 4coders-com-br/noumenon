@@ -135,7 +135,7 @@
 
 (def ^:private progress-commands
   "Commands that benefit from SSE progress streaming."
-  #{"import" "analyze" "enrich" "digest" "bench" "introspect"})
+  #{"import" "analyze" "enrich" "digest" "bench" "introspect" "update"})
 
 (defn- make-progress-handler
   "Create an SSE on-progress callback that drives a TUI progress bar.
@@ -323,9 +323,12 @@
 
 (defn- watch-loop! [{:keys [conn repo-path body interval-s]}]
   (loop [failures 0]
-    (let [resp (try (api/post! conn "/api/update" body)
-                    (catch Exception e
-                      {:ok false :error (or (.getMessage e) (str (class e)))}))]
+    (let [progress (make-progress-handler "update")
+          resp     (try (api/post! conn "/api/update" body (:handler progress))
+                        (catch Exception e
+                          {:ok false :error (or (.getMessage e) (str (class e)))})
+                        (finally
+                          (when-let [cleanup (:cleanup progress)] (cleanup))))]
       (if (:ok resp)
         (do (when (not= :up-to-date (get-in resp [:data :status]))
               (tui/eprintln (str "  Updated: " (get-in resp [:data :added] 0) " added, "

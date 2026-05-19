@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixes
+
+- **`noum` reuses an existing system Java when one is available** — the launcher used to unconditionally download a ~200MB JRE to `~/.noumenon/jre/` on first run, even when the user already had Java 21+ installed. It now checks `$JAVA_HOME` and `java` on `PATH` first; if either points at a Java 21+ runtime (the minimum the uberjar targets — older JVMs fail with `UnsupportedClassVersionError` at class-load time), the launcher uses it and skips the download. The bundled JRE remains the fallback for users on Java 17 or older, or with no Java at all.
+- **`noum` JRE bootstrap no longer fails on WSL with a cross-filesystem extraction error** — the launcher staged the downloaded JRE in `/tmp` (which on WSL is `tmpfs`) before moving it into `~/.noumenon/jre/` (which lives on ext4). `java.nio.file.Files/move` can rename single files across filesystems but throws `FileSystemException` on non-empty directories, so the move blew up on the JRE's `legal/`/`bin/`/`lib/` subdirs with `Error: /tmp/noum-jre-…/jdk-21…/legal`. Staging now happens under `~/.noumenon/jre-staging-…/` so the move is always intra-filesystem; a copy-tree fallback covers any other cross-fs configuration.
+
 ## 0.12.0
 
 ### BREAKING CHANGES

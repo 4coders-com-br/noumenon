@@ -8,7 +8,8 @@
             [noum.paths :as paths]
             [noum.tui.core :as tui]
             [noum.tui.spinner :as spinner])
-  (:import [java.security MessageDigest]))
+  (:import [java.io IOException]
+           [java.security MessageDigest]))
 
 (def ^:private jre-version "21")
 
@@ -78,16 +79,63 @@
           (do ((:stop s) "Warning: checksum verification failed")
               (tui/eprintln (str "  " (.getMessage e) ". Continuing without verification."))))))))
 
+(def ^:private min-major-version
+  "Minimum Java major version Noumenon's uberjar runs on. Bump when deps.edn
+   targets a newer LTS — this is the only system-Java acceptance gate."
+  21)
+
 (defn installed?
-  "Check if a JRE is available at the expected location."
+  "Check if the bundled JRE is available at the expected location."
   []
   (let [java-bin (str (fs/path paths/jre-dir "bin" "java"))]
     (fs/exists? java-bin)))
 
-(defn java-home
-  "Return the JRE home directory."
+(defn- parse-major-version
+  "Parse the major Java version from `java -version` output. Returns int or nil.
+   Handles both modern (\"21.0.4\") and legacy (\"1.8.0_392\") strings — for
+   the latter the relevant major is the second segment (8)."
+  [version-text]
+  (when-let [[_ a b] (some->> version-text (re-find #"version \"(\d+)(?:\.(\d+))?"))]
+    (try
+      (let [a-int (Integer/parseInt a)]
+        (if (and (= 1 a-int) b) (Integer/parseInt b) a-int))
+      (catch Exception _ nil))))
+
+(defn- system-java-version
+  "Run `java-bin -version` and return its major version, or nil on error.
+   `java -version` writes to stderr; some JVMs split between out and err."
+  [java-bin]
+  (try
+    (let [{:keys [out err]} (proc/shell {:out :string :err :string :continue true}
+                                        java-bin "-version")]
+      (parse-major-version (str err out)))
+    (catch Exception _ nil)))
+
+(defn- system-jre-home
+  "Return the home of a usable system JRE (Java `min-major-version`+), or nil.
+   Checks $JAVA_HOME, then `java` on PATH."
   []
-  (when (installed?) paths/jre-dir))
+  (let [candidates (concat
+                    (when-let [jh (System/getenv "JAVA_HOME")]
+                      [{:home jh :bin (str (fs/path jh "bin" "java"))}])
+                    (when-let [path-java (some-> (fs/which "java") str)]
+                      ;; java's home is <prefix>/bin/java → <prefix>. Resolve
+                      ;; the symlink so `~/.local/bin/java`-style shims point
+                      ;; at the real install root.
+                      [{:home (str (fs/parent (fs/parent (fs/canonicalize path-java))))
+                        :bin  path-java}]))]
+    (some (fn [{:keys [home bin]}]
+            (when (fs/exists? bin)
+              (when-let [v (system-java-version bin)]
+                (when (>= v min-major-version) home))))
+          candidates)))
+
+(defn java-home
+  "Return a usable JRE home: bundled if installed, otherwise a Java
+   `min-major-version`+ runtime on the system. Nil if neither is available."
+  []
+  (or (when (installed?) paths/jre-dir)
+      (system-jre-home)))
 
 (defn- find-jre-root
   "After extracting, find the actual JRE root (may be nested in a directory).
@@ -101,6 +149,19 @@
         (if (fs/exists? home) home inner))
       (str extract-dir))))
 
+(defn- relocate!
+  "Move src → target, falling back to recursive copy + delete if the
+   underlying Files/move can't rename (typically a cross-filesystem move
+   of a non-empty directory). WSL is the common case: /tmp lives on
+   tmpfs while $HOME lives on ext4, so Files/move on the JRE's
+   subdirectories throws a FileSystemException."
+  [src target]
+  (try
+    (fs/move src target {:replace-existing true})
+    (catch IOException _
+      (fs/copy-tree src target {:replace-existing true})
+      (fs/delete-tree src))))
+
 (defn download!
   "Download and install JRE. Returns the JRE directory path."
   []
@@ -109,7 +170,13 @@
         url      (adoptium-url os arch)
         s        (spinner/start (str "Downloading JRE " jre-version " for " os "/" arch "..."))
         s2-atom  (atom nil)
-        tmp-dir  (str (fs/create-temp-dir {:prefix "noum-jre-"}))
+        ;; Stage under ~/.noumenon/ rather than the system temp dir so the
+        ;; move into paths/jre-dir is always intra-filesystem. On WSL the
+        ;; system /tmp is tmpfs and ~ is ext4, so a /tmp staging dir would
+        ;; force a cross-fs move and break on the JRE's non-empty
+        ;; subdirectories (`legal/`, `bin/`, `lib/`, ...).
+        _        (fs/create-dirs paths/noum-dir)
+        tmp-dir  (str (fs/create-temp-dir {:path paths/noum-dir :prefix "jre-staging-"}))
         ext      (if (= os "windows") ".zip" ".tar.gz")
         archive  (str (fs/path tmp-dir (str "jre" ext)))]
     (try
@@ -130,7 +197,7 @@
           (doseq [f (fs/list-dir root)]
             (let [target (str (fs/path paths/jre-dir (fs/file-name f)))]
               (when-not (str/ends-with? (str f) ext)
-                (fs/move f target {:replace-existing true})))))
+                (relocate! f target)))))
         ((:stop s2) "JRE installed."))
       paths/jre-dir
       (catch Exception e
@@ -142,9 +209,21 @@
         (fs/delete-tree tmp-dir)))))
 
 (defn ensure!
-  "Ensure JRE is installed. Download if not. Returns JRE directory."
+  "Return a usable JRE home. Tries (1) the bundled JRE under ~/.noumenon/,
+   (2) a system Java that satisfies `min-major-version`, (3) a fresh
+   download as a last resort. Noumenon's uberjar targets Java
+   `min-major-version`, so anything older is rejected here rather than
+   blowing up later with UnsupportedClassVersionError."
   []
-  (if (installed?)
+  (cond
+    (installed?)
     paths/jre-dir
-    (do (tui/eprintln "First run: downloading JRE (~200MB) to ~/.noumenon/")
-        (download!))))
+
+    :else
+    (if-let [sys-home (system-jre-home)]
+      (do (tui/eprintln (str "Using system Java at " sys-home
+                             " (skipping " jre-version "+ bundled download)."))
+          sys-home)
+      (do (tui/eprintln (str "No Java " min-major-version "+ found. "
+                             "First run: downloading JRE (~200MB) to ~/.noumenon/"))
+          (download!)))))

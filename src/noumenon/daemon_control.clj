@@ -27,14 +27,13 @@
 (defn- daemon-args
   "Argv for spawning a daemon child. Works for both uberjar runs (where
    classpath is one .jar) and dev `clj -M:run` runs (long classpath)."
-  [{:keys [db-dir provider model]}]
+  [{:keys [db-dir model]}]
   (let [java     (str (io/file (System/getProperty "java.home") "bin" "java"))
         cp       (System/getProperty "java.class.path")
         base     [java "-cp" cp "clojure.main" "-m" "noumenon.main"
                   "daemon" "--port" "0"]
-        with-db  (cond-> base   db-dir   (into ["--db-dir" db-dir]))
-        with-prv (cond-> with-db provider (into ["--provider" provider]))]
-    (cond-> with-prv model (into ["--model" model]))))
+        with-db  (cond-> base  db-dir (into ["--db-dir" db-dir]))]
+    (cond-> with-db model (into ["--model" model]))))
 
 (defn- spawn-daemon-jvm! [opts]
   (let [pb (ProcessBuilder. ^java.util.List (daemon-args opts))]

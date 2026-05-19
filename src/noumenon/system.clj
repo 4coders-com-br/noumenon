@@ -59,7 +59,7 @@
   "Build the Integrant config map for a daemon process. opts mirrors the
    shape passed to http/start! plus :max-llm-concurrency for the LLM
    semaphore."
-  [{:keys [port bind db-dir provider model token max-llm-concurrency]}]
+  [{:keys [port bind db-dir model token max-llm-concurrency]}]
   (let [max-permits (or max-llm-concurrency
                         (util/env-int "NOUMENON_MAX_LLM_CONCURRENCY")
                         10)]
@@ -75,7 +75,6 @@
                                                  (ig/ref :noumenon/completion-cache)
                                                  (ig/ref :noumenon/agent-sessions)]}
                                   db-dir   (assoc :db-dir db-dir)
-                                  provider (assoc :provider provider)
                                   model    (assoc :model model)
                                   token    (assoc :token token))}))
 

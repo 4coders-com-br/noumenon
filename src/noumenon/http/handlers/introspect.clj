@@ -23,15 +23,15 @@
 
 (defn- build-introspect-opts [{:keys [db meta-conn db-name db-dir repo-path]} params config
                               {:keys [stop-flag run-id progress-fn]}]
-  (let [{:keys [provider model]} (mw/resolve-provider params config)
+  (let [{:keys [model]} (mw/resolve-model params config)
         {:keys [invoke-fn]}
         (llm/make-messages-fn-from-opts
-         {:provider provider :model model :temperature 0.7 :max-tokens 8192})
+         {:model model :temperature 0.7 :max-tokens 8192})
         invoke-fn-factory
         (fn []
           (:invoke-fn
            (llm/make-messages-fn-from-opts
-            {:provider provider :model model :temperature 0.0 :max-tokens 4096})))
+            {:model model :temperature 0.0 :max-tokens 4096})))
         extra-repos (resolve-extra-repos (:extra_repos params) db-dir)]
     (cond-> {:db db :repo-name db-name :repo-path repo-path
              :meta-conn meta-conn
@@ -44,7 +44,7 @@
              :git-commit? (and (:git_commit params)
                                (not (:read-only config))
                                (not (git/bare-repo? repo-path)))
-             :model-config {:provider provider :model model}
+             :model-config {:model model}
              :progress-fn progress-fn}
       stop-flag          (assoc :stop-flag stop-flag)
       run-id             (assoc :run-id run-id)

@@ -7,7 +7,7 @@
 
 (defn- run-benchmark [{:keys [conn meta-db db db-dir db-name repo-path]} params config progress-fn]
   (let [{:keys [prompt-fn]}
-        (llm/wrap-as-prompt-fn-from-opts (mw/resolve-provider params config))
+        (llm/wrap-as-prompt-fn-from-opts (mw/resolve-model params config))
         layers (mw/validate-layers (:layers params))
         mode   (cond-> {} layers (assoc :layers layers))
         result (bench/run-benchmark! db repo-path prompt-fn

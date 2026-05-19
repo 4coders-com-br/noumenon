@@ -102,16 +102,14 @@
 
 (defn- build-benchmark-opts
   "Build the run-opts map for benchmark from CLI flags."
-  [{:keys [max-questions stop-after max-cost model judge-model provider
+  [{:keys [max-questions stop-after max-cost model judge-model
            concurrency min-delay skip-raw skip-judge deterministic-only
            canary layers report]}
    conn meta-db]
   {:meta-db        meta-db
    :judge-llm      (:prompt-fn (llm/wrap-as-prompt-fn-from-opts
-                                {:provider provider
-                                 :model    (or judge-model model)}))
-   :model-config   {:model model :judge-model (or judge-model model)
-                    :provider provider}
+                                {:model (or judge-model model)}))
+   :model-config   {:model model :judge-model (or judge-model model)}
    :checkpoint-dir "data/benchmarks/runs"
    :budget         {:max-questions max-questions
                     :stop-after-ms (when stop-after (* stop-after 1000))
@@ -129,7 +127,7 @@
 
 (defn do-benchmark
   "Run the benchmark subcommand."
-  [{:keys [resume model provider] :as opts}]
+  [{:keys [resume model] :as opts}]
   (cu/with-valid-repo
     opts
     (fn [ctx]
@@ -138,7 +136,7 @@
           ctx
           (fn [{:keys [conn db meta-db]}]
             (let [answer-llm (:prompt-fn (llm/wrap-as-prompt-fn-from-opts
-                                          {:provider provider :model model}))
+                                          {:model model}))
                   run-opts   (assoc (build-benchmark-opts opts conn meta-db)
                                     :db-dir (:db-dir ctx) :db-name (:db-name ctx))]
               (if resume

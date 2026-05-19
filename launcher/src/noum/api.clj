@@ -270,7 +270,7 @@
       (let [jre-path (jre/ensure!)
             jar-path (jar/ensure! paths/version)]
         (daemon/ensure! (merge {:jre-path jre-path :jar-path jar-path}
-                               (select-keys effective [:db-dir :provider :model :token])))))))
+                               (select-keys effective [:db-dir :model :token])))))))
 
 ;; --- Launcher-local settings ---
 

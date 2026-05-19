@@ -653,7 +653,7 @@
                     (fn [_]
                       {:prompt-fn   (fn [_] {:text "" :usage {}})
                        :model-id    "stub-model"
-                       :provider-kw :stub})
+                       :provider "stub"})
                     noumenon.analyze/analyze-repo!
                     (fn [& _args]
                       (swap! analyze-calls inc)
@@ -768,7 +768,7 @@
                     (fn [_] (swap! reseed-calls inc) {})
                     noumenon.llm/wrap-as-prompt-fn-from-opts
                     (fn [_] {:prompt-fn (fn [_] {:text "{}" :usage {}})
-                             :model-id "stub" :provider-kw :stub})
+                             :model-id "stub" :provider "stub"})
                     noumenon.synthesize/synthesize-repo!
                     (fn [_ _ _] {:components 0})]
         (handler (post-with-body "/api/synthesize" {:repo_path repo-path})))
@@ -789,7 +789,7 @@
                     (fn [_] (swap! reseed-calls inc) {})
                     noumenon.llm/wrap-as-prompt-fn-from-opts
                     (fn [_] {:prompt-fn (fn [_] {:text "{}" :usage {}})
-                             :model-id "stub" :provider-kw :stub})
+                             :model-id "stub" :provider "stub"})
                     noumenon.analyze/analyze-repo!
                     (fn [& _] {:files-analyzed 0 :files-promoted 0
                                :files-skipped 0 :files-errored 0
@@ -819,7 +819,7 @@
                     (fn [opts]
                       (swap! seen conj opts)
                       {:prompt-fn (fn [_] {:text "{}" :usage {}})
-                       :model-id "stub" :provider-kw :stub})
+                       :model-id "stub" :provider "stub"})
                     noumenon.synthesize/synthesize-repo!
                     (fn [_ _ _] {:components 0})]
         (handler (post-with-body "/api/synthesize" {:repo_path repo-path})))
@@ -842,7 +842,7 @@
       (handler (post-with-body "/api/import" {:repo_path repo-path}))
       (with-redefs [noumenon.llm/wrap-as-prompt-fn-from-opts
                     (fn [_] {:prompt-fn (fn [_] {:text "{}" :usage {}})
-                             :model-id "stub" :provider-kw :stub})
+                             :model-id "stub" :provider "stub"})
                     noumenon.analyze/analyze-repo!
                     (fn [& _] {:files-analyzed 0 :files-promoted 0
                                :files-skipped 0 :files-errored 0
@@ -879,7 +879,7 @@
       (handler (post-with-body "/api/import" {:repo_path repo-path}))
       (with-redefs [noumenon.llm/wrap-as-prompt-fn-from-opts
                     (fn [_] {:prompt-fn (fn [_] {:text "{}" :usage {}})
-                             :model-id "stub" :provider-kw :stub})
+                             :model-id "stub" :provider "stub"})
                     noumenon.synthesize/synthesize-repo!
                     (fn [_ _ _] {:components 0})
                     noumenon.calls/resolve-calls!
@@ -907,7 +907,7 @@
                     (fn [opts]
                       (swap! seen conj opts)
                       {:prompt-fn (fn [_] {:text "{}" :usage {}})
-                       :model-id "stub" :provider-kw :stub})
+                       :model-id "stub" :provider "stub"})
                     noumenon.analyze/analyze-repo!
                     (fn [& _] {:files-analyzed 0 :files-promoted 0
                                :files-skipped 0 :files-errored 0

@@ -75,7 +75,7 @@
 
 (defn do-ask
   "Run the ask subcommand."
-  [{:keys [question model provider max-iterations continue-from verbose] :as opts}]
+  [{:keys [question model max-iterations continue-from verbose] :as opts}]
   (cu/with-valid-repo
     opts
     (fn [ctx]
@@ -84,8 +84,7 @@
           ctx
           (fn [{:keys [db meta-db meta-conn db-name]}]
             (let [{:keys [invoke-fn]}
-                  (llm/make-messages-fn-from-opts {:provider    provider
-                                                   :model       model
+                  (llm/make-messages-fn-from-opts {:model       model
                                                    :temperature 0.3
                                                    :max-tokens  4096})
                   eidx       (embed/get-cached-index (:db-dir ctx) db-name)

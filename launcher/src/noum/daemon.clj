@@ -97,7 +97,7 @@
 
 (defn start!
   "Start the JVM daemon. Returns {:port N} or throws."
-  [{:keys [jre-path jar-path db-dir provider model token]}]
+  [{:keys [jre-path jar-path db-dir model token]}]
   (if (running?)
     (let [{:keys [port]} (read-daemon-info)]
       (tui/eprintln (str "Daemon already running on port " port))
@@ -105,7 +105,6 @@
     (let [java-bin (str (fs/path jre-path "bin" "java"))
           args     (cond-> [java-bin "-jar" jar-path "daemon" "--port" "0"]
                      db-dir   (into ["--db-dir" db-dir])
-                     provider (into ["--provider" provider])
                      model    (into ["--model" model]))
           env      (cond-> (into {} (System/getenv))
                      token (assoc "NOUMENON_TOKEN" token))

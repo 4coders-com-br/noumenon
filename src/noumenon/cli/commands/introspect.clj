@@ -10,7 +10,7 @@
 
 (defn do-introspect
   "Run the introspect self-improvement loop."
-  [{:keys [model provider max-iterations max-hours max-cost git-commit target
+  [{:keys [model max-iterations max-hours max-cost git-commit target
            eval-runs extra-repos] :as opts}]
   (try
     (util/validate-introspect-targets! target)
@@ -22,15 +22,13 @@
             ctx
             (fn [{:keys [db meta-conn db-name db-dir]}]
               (let [{:keys [invoke-fn]}
-                    (llm/make-messages-fn-from-opts {:provider    provider
-                                                     :model       model
+                    (llm/make-messages-fn-from-opts {:model       model
                                                      :temperature 0.7
                                                      :max-tokens  8192})
                     invoke-fn-factory
                     (fn []
                       (:invoke-fn
-                       (llm/make-messages-fn-from-opts {:provider    provider
-                                                        :model       model
+                       (llm/make-messages-fn-from-opts {:model       model
                                                         :temperature 0.0
                                                         :max-tokens  4096})))
                     extra (repo/resolve-extra-repos extra-repos db-dir)
@@ -51,7 +49,7 @@
                                      :max-hours           max-hours
                                      :max-cost            max-cost
                                      :git-commit?         (and git-commit (not bare-repo?))
-                                     :model-config        {:provider provider :model model}
+                                     :model-config        {:model model}
                                      :eval-runs           (or eval-runs 1)
                                      :allowed-targets     (when target
                                                             (set (map keyword

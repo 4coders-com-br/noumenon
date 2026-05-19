@@ -34,9 +34,6 @@
    :missing-stop-after-value     "Missing value for --stop-after."
    :missing-model-value          "Missing value for --model."
    :missing-judge-model-value    "Missing value for --judge-model."
-   :missing-provider-value       "Missing value for --provider."
-   :invalid-provider             #(str "Invalid --provider value: " (:value %)
-                                       ". Must be 'glm', 'claude', or 'claude-api'.")
    :invalid-max-cost             #(str "Invalid --max-cost value: " (:value %))
    :missing-max-cost-value       "Missing value for --max-cost."
    :invalid-concurrency          #(str "Invalid --concurrency value: " (:value %) ". Must be 1-20.")
@@ -116,8 +113,6 @@
     "ask"              (c-ask/do-ask parsed)
     "show-schema"      (c-insp/do-show-schema parsed)
     "status"           (c-insp/do-status parsed)
-    "llm-providers"    (c-insp/do-llm-providers parsed)
-    "llm-models"       (c-insp/do-llm-models parsed)
     "list-databases"   (c-insp/do-list-databases parsed)
     "benchmark"        (c-bench/do-benchmark parsed)
     "digest"           (c-digest/do-digest parsed)

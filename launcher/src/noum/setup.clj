@@ -61,34 +61,51 @@
       (fs/set-posix-file-permissions credentials-path "rw-------")
       (catch Exception _))))
 
+(def ^:private anthropic-default-base-url "https://api.anthropic.com")
+
 (defn- ensure-credentials!
-  "Prompt for LLM provider tokens. Idempotent: existing values shown as defaults,
-   blank input keeps the current value, new input overwrites."
+  "Prompt for the three LLM env vars. Idempotent: existing values shown as
+   [configured], blank input keeps the current value, new input overwrites.
+
+   Writes ~/.noumenon/credentials. Noumenon reads that file directly — no
+   `source` or shell-export step is needed for local use."
   []
-  (let [existing (read-credentials)
-        zai-cur  (get existing "NOUMENON_ZAI_TOKEN")
-        ant-cur  (get existing "ANTHROPIC_API_KEY")
-        has-any  (or zai-cur ant-cur)]
-    (if has-any
-      (tui/eprintln (str (style/green "✓") " Credentials configured"
-                         (when zai-cur " (GLM)")
-                         (when ant-cur " (Anthropic)")
+  (let [existing  (read-credentials)
+        url-cur   (get existing "NOUMENON_LLM_BASE_URL")
+        key-cur   (get existing "NOUMENON_LLM_API_KEY")
+        model-cur (get existing "NOUMENON_LLM_MODEL")
+        configured? (and url-cur key-cur)]
+    (if configured?
+      (tui/eprintln (str (style/green "✓") " LLM credentials configured"
+                         (when model-cur (str " (model: " model-cur ")"))
                          "."))
-      (tui/eprintln (str (style/dim "  LLM credentials — at least one provider token is needed."))))
-    (let [zai-new (prompt/ask-secret
-                   (str "GLM token (NOUMENON_ZAI_TOKEN)"
-                        (when zai-cur (str " " (style/dim "[configured]")))))
-          ant-new (prompt/ask-secret
-                   (str "Anthropic API key (ANTHROPIC_API_KEY)"
-                        (when ant-cur (str " " (style/dim "[configured]")))))
-          final   (cond-> existing
-                    zai-new (assoc "NOUMENON_ZAI_TOKEN" zai-new)
-                    ant-new (assoc "ANTHROPIC_API_KEY" ant-new))]
-      (when (or zai-new ant-new)
-        (write-credentials! final)
-        (tui/eprintln (str (style/green "✓") " Saved to " credentials-path)))
-      (when (and (not has-any) (not zai-new) (not ant-new))
-        (tui/eprintln (str (style/dim "  Skipped. Add tokens later: ") credentials-path))))))
+      (tui/eprintln (str (style/dim "  LLM credentials — need NOUMENON_LLM_BASE_URL and NOUMENON_LLM_API_KEY."))))
+    (tui/eprintln (str (style/dim "  Compatible endpoints: Anthropic direct, OpenRouter, LiteLLM, Z.ai, or any Anthropic-Messages-API gateway.")))
+    (let [url-new   (prompt/ask
+                     (str "Base URL (NOUMENON_LLM_BASE_URL)"
+                          (cond
+                            url-cur (str " " (style/dim "[configured]"))
+                            :else   (str " " (style/dim (str "[default: " anthropic-default-base-url "]"))))))
+          key-new   (prompt/ask-secret
+                     (str "API key (NOUMENON_LLM_API_KEY)"
+                          (when key-cur (str " " (style/dim "[configured]")))))
+          model-new (prompt/ask
+                     (str "Default model id (NOUMENON_LLM_MODEL, optional)"
+                          (when model-cur (str " " (style/dim (str "[" model-cur "]"))))))
+          chosen-url (cond
+                       (seq url-new) url-new
+                       url-cur       url-cur
+                       :else         anthropic-default-base-url)
+          final     (cond-> existing
+                      true                (assoc "NOUMENON_LLM_BASE_URL" chosen-url)
+                      (seq key-new)       (assoc "NOUMENON_LLM_API_KEY" key-new)
+                      (seq model-new)     (assoc "NOUMENON_LLM_MODEL" model-new))]
+      (if (and (get final "NOUMENON_LLM_BASE_URL") (get final "NOUMENON_LLM_API_KEY"))
+        (do (write-credentials! final)
+            (tui/eprintln (str (style/green "✓") " Saved to " credentials-path))
+            (tui/eprintln (str (style/dim "  Noumenon reads this file directly — no `source` needed."))))
+        (tui/eprintln (str (style/dim "  Skipped. Add credentials later by re-running setup: ")
+                           credentials-path))))))
 
 (defn setup-desktop!
   "Write MCP config for Claude Desktop."

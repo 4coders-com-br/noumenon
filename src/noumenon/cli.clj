@@ -1,7 +1,6 @@
 (ns noumenon.cli
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]
-            [noumenon.llm :as llm]))
+            [clojure.string :as str]))
 
 (def program-name
   (if (= "jar" (.getProtocol (io/resource "version.edn")))
@@ -43,13 +42,6 @@
       {:ok value}
       {:error (:error-invalid spec) :value raw})))
 
-(defn- valid-providers
-  []
-  (set (conj (llm/supported-provider-names) "claude")))
-
-(def ^:private all-valid-providers
-  (fn [raw] ((valid-providers) raw)))
-
 ;; --- Reusable flag atoms ---
 
 (def ^:private db-dir-flag
@@ -59,13 +51,8 @@
 
 (def ^:private model-flag
   {:flag "--model" :key :model :parse :string
-   :desc "Model alias (e.g. sonnet, haiku, opus)"
+   :desc "Model id sent to NOUMENON_LLM_BASE_URL (overrides NOUMENON_LLM_MODEL)"
    :error-missing :missing-model-value})
-
-(def ^:private provider-flag
-  {:flag "--provider" :key :provider :parse :string
-   :desc "Provider: glm (default), claude-api (alias: claude)"
-   :error-invalid :invalid-provider :error-missing :missing-provider-value})
 
 (def ^:private verbose-flags
   [{:flag "--verbose" :key :verbose :parse :bool
@@ -104,7 +91,7 @@
 ;; --- Composed flag sets ---
 
 (def ^:private common-flags
-  (vec (concat [model-flag provider-flag max-cost-flag db-dir-flag]
+  (vec (concat [model-flag max-cost-flag db-dir-flag]
                verbose-flags)))
 
 (def ^:private concurrency-flags
@@ -125,10 +112,6 @@
   {:flag "--resume" :key :resume :parse :optional-string
    :desc "Resume from checkpoint (default: latest). Place before <repo-path> to avoid ambiguity. The next non-flag argument is consumed as the run ID."})
 
-(defn- with-provider-valid
-  [specs valid-set]
-  (mapv #(if (= "--provider" (:flag %)) (assoc % :valid valid-set) %) specs))
-
 (def ^:private reanalyze-flag
   {:flag "--reanalyze" :key :reanalyze :parse :string
    :desc "Re-analyze files: all, prompt-changed, model-changed, stale (default: only unanalyzed files)"
@@ -139,7 +122,7 @@
    :desc "Bypass the content-addressed promotion cache; always invoke the LLM"})
 
 (def ^:private analyze-flags
-  (vec (concat [model-flag (assoc provider-flag :valid all-valid-providers)
+  (vec (concat [model-flag
                 max-files-flag reanalyze-flag no-promote-flag db-dir-flag]
                verbose-flags concurrency-flags selector-flags)))
 
@@ -160,7 +143,6 @@
                 [{:flag "--analyze" :key :analyze :parse :bool
                   :desc "Also run LLM analysis on changed files"}
                  model-flag
-                 (assoc provider-flag :valid all-valid-providers)
                  db-dir-flag
                  concurrency-flag]
                 selector-flags))
@@ -174,7 +156,6 @@
            {:flag "--analyze" :key :analyze :parse :bool
             :desc "Also run LLM analysis on changed files"}
            model-flag
-           (assoc provider-flag :valid all-valid-providers)
            db-dir-flag
            {:flag "--concurrency" :key :concurrency :parse :range-int :min 1 :max 20
             :desc "Parallel workers for import/enrich, 1-20 (default: 8)"
@@ -191,14 +172,12 @@
    :positionals {:required 0 :error nil :keys []}})
 
 (def ^:private analyze-command-spec
-  {:flags (with-provider-valid analyze-flags all-valid-providers)
+  {:flags analyze-flags
    :initial {}
    :positionals {:required 1 :error :no-repo-path :keys [:repo-path]}})
 
 (def ^:private synthesize-command-spec
-  {:flags [model-flag
-           (assoc provider-flag :valid all-valid-providers)
-           db-dir-flag]
+  {:flags [model-flag db-dir-flag]
    :initial {}
    :positionals {:required 1 :error :no-repo-path :keys [:repo-path]}})
 
@@ -222,12 +201,12 @@
        vec))
 
 (def ^:private benchmark-command-spec
-  {:flags (vec (concat (with-provider-valid benchmark-flags all-valid-providers)
+  {:flags (vec (concat benchmark-flags
                        concurrency-flags
                        budget-flags
                        [resume-flag
                         {:flag "--judge-model" :key :judge-model :parse :string
-                         :desc "Model alias for judge stages"
+                         :desc "Model id for judge stages"
                          :error-missing :missing-judge-model-value}
                         {:flag "--layers" :key :layers :parse :string
                          :desc "Comma-separated layers to test: raw,import,enrich,full (default: raw,full)"
@@ -256,7 +235,6 @@
                   :desc "Question to ask about the repository (place before <repo-path>)"
                   :error-missing :ask-missing-question}
                  model-flag
-                 (assoc provider-flag :valid all-valid-providers)
                  {:flag "--max-iterations" :key :max-iterations :parse :pos-int
                   :desc "Max query iterations (default: 10)"
                   :error-invalid :invalid-max-iterations
@@ -271,7 +249,6 @@
 (def ^:private introspect-command-spec
   {:flags (vec (concat
                 [model-flag
-                 (assoc provider-flag :valid all-valid-providers)
                  max-cost-flag
                  db-dir-flag
                  {:flag "--max-iterations" :key :max-iterations :parse :pos-int
@@ -336,20 +313,6 @@
    "status"         {:spec simple-command-spec
                      :summary "Show import counts for a repository"
                      :usage "status [options] <repo-path>"}
-   "llm-providers"  {:spec {:flags []
-                            :initial {:subcommand "llm-providers"}
-                            :positionals {:required 0 :error nil :keys []}}
-                     :summary "Show configured LLM providers, models, and defaults"
-                     :usage "llm-providers"
-                     :epilog "Reads NOUMENON_LLM_PROVIDERS_EDN and NOUMENON_DEFAULT_PROVIDER.
-Shows each provider's available models and default model."}
-   "llm-models"     {:spec {:flags [(assoc provider-flag :valid all-valid-providers)]
-                            :initial {:subcommand "llm-models"}
-                            :positionals {:required 0 :error nil :keys []}}
-                     :summary "Show models for a provider (API first, config fallback)"
-                     :usage "llm-models [--provider <name>]"
-                     :epilog "Fetches provider models dynamically when supported, and falls back to
-configured :models when discovery is unavailable."}
    "show-schema"    {:spec simple-command-spec
                      :summary "Show the database schema with all attributes and types"
                      :usage "show-schema [options] <repo-path>"}
@@ -365,7 +328,7 @@ configured :models when discovery is unavailable."}
                 :usage "benchmark [options] <repo-path>"
                 :epilog "By default, runs 22 deterministic questions (objective, reproducible).\nPass --full to include 18 LLM-judged architectural questions.\nUse --fast for cheapest mode (deterministic + full-only, no raw context)."}
    "digest"    {:spec {:flags (vec (concat
-                                    (with-provider-valid benchmark-flags all-valid-providers)
+                                    benchmark-flags
                                     concurrency-flags
                                     budget-flags
                                     [{:flag "--skip-import" :key :skip-import :parse :bool
@@ -415,13 +378,8 @@ configured :models when discovery is unavailable."}
    "serve"     {:spec {:flags [{:flag "--db-dir" :key :db-dir :parse :string
                                 :desc "Override storage directory (default: data/datomic/)"
                                 :error-missing :missing-db-dir-value}
-                               {:flag "--provider" :key :provider :parse :string
-                                :desc "Default LLM provider (default: glm)"
-                                :valid all-valid-providers
-                                :error-invalid :invalid-provider
-                                :error-missing :missing-provider-value}
                                {:flag "--model" :key :model :parse :string
-                                :desc "Default model alias"
+                                :desc "Default model id (overrides NOUMENON_LLM_MODEL)"
                                 :error-missing :missing-model-value}]
                        :initial {:subcommand "serve"}
                        :positionals {:required 0 :error nil :keys []}}
@@ -431,13 +389,8 @@ configured :models when discovery is unavailable."}
    "daemon"    {:spec {:flags [{:flag "--db-dir" :key :db-dir :parse :string
                                 :desc "Override storage directory (default: data/datomic/)"
                                 :error-missing :missing-db-dir-value}
-                               {:flag "--provider" :key :provider :parse :string
-                                :desc "Default LLM provider (default: glm)"
-                                :valid all-valid-providers
-                                :error-invalid :invalid-provider
-                                :error-missing :missing-provider-value}
                                {:flag "--model" :key :model :parse :string
-                                :desc "Default model alias"
+                                :desc "Default model id (overrides NOUMENON_LLM_MODEL)"
                                 :error-missing :missing-model-value}
                                {:flag "--port" :key :port :parse :range-int :min 0 :max 65535
                                 :desc "HTTP port (default: 0 = auto-assign)"
@@ -455,7 +408,7 @@ configured :models when discovery is unavailable."}
                 :epilog "Starts an HTTP API server on 127.0.0.1 for the noum launcher\nand future Electron UI. Writes connection info to ~/.noumenon/daemon.edn.\nUse --port to specify a fixed port, or omit for auto-assignment.\nUse --token for remote access authentication."}})
 
 (def ^:private command-order
-  ["digest" "import" "analyze" "enrich" "synthesize" "embed" "update" "watch" "query" "show-schema" "status" "llm-providers" "llm-models" "list-databases" "ask" "serve" "daemon" "benchmark" "introspect" "reseed" "artifact-history"])
+  ["digest" "import" "analyze" "enrich" "synthesize" "embed" "update" "watch" "query" "show-schema" "status" "list-databases" "ask" "serve" "daemon" "benchmark" "introspect" "reseed" "artifact-history"])
 
 ;; --- Help text generation ---
 
@@ -564,12 +517,6 @@ configured :models when discovery is unavailable."}
             (map vector keys (range)))
     {:error error}))
 
-(defn- normalize-provider-opt
-  [opts]
-  (if-let [provider (:provider opts)]
-    (assoc opts :provider (llm/normalize-provider-name provider))
-    opts))
-
 (defn- parse-command
   [command-spec args]
   (let [result (parse-flags (:flags command-spec) args (:initial command-spec))]
@@ -579,9 +526,7 @@ configured :models when discovery is unavailable."}
             opts* (if (:positionals command-spec)
                     (apply-positionals opts positional (:positionals command-spec))
                     opts)]
-        (if (:error opts*)
-          opts*
-          (normalize-provider-opt opts*))))))
+        opts*))))
 
 ;; --- Help detection ---
 

@@ -232,6 +232,27 @@
   (when-let [s (env var-name)]
     (try (Integer/parseInt (str/trim s)) (catch NumberFormatException _ nil))))
 
+(def credentials-file-path
+  "Path to the optional credentials file Noumenon reads as a fallback to env vars."
+  (str (io/file (System/getProperty "user.home") ".noumenon" "credentials")))
+
+(defn read-credentials-file
+  "Parse ~/.noumenon/credentials into a {string string} map.
+   Format: one `KEY=VALUE` per line, with optional `export ` prefix
+   and optional surrounding single/double quotes around the value.
+   Lines starting with `#` and blank lines are ignored. Missing file → {}.
+   Caller decides whether the file should be consulted at all."
+  ([] (read-credentials-file credentials-file-path))
+  ([path]
+   (let [f (io/file path)]
+     (if (.isFile f)
+       (->> (str/split-lines (slurp f))
+            (keep (fn [line]
+                    (when-let [[_ k v] (re-matches #"\s*(?:export\s+)?([A-Z_][A-Z_0-9]*)=(.*)" (str/trim line))]
+                      [k (-> v str/trim (str/replace #"^[\"']|[\"']$" ""))])))
+            (into {}))
+       {}))))
+
 (defn read-version
   "Read project version from version.edn on classpath."
   []

@@ -77,8 +77,7 @@
     :inputSchema {:type "object"
                   :properties (merge repo-path-prop
                                      {"question" {:type "string" :description "Question to ask about the repository"}
-                                      "provider" {:type "string" :description "LLM provider: glm or claude-api (alias: claude)"}
-                                      "model" {:type "string" :description "Model alias (e.g. sonnet, haiku, opus)"}
+                                      "model" {:type "string" :description "Model id to send to NOUMENON_LLM_BASE_URL (overrides the daemon's default)"}
                                       "max_iterations" {:type "integer" :description "Max query iterations (default: 10, max: 50)"}
                                       "continue_from" {:type "string" :description "Session ID from a budget-exhausted run — resumes the agent from where it left off"}})
                   :required ["question" "repo_path"]}}
@@ -93,10 +92,8 @@
     :description "Run LLM analysis on repository files to enrich the knowledge graph with semantic metadata. By default only analyzes files not yet analyzed. Pass reanalyze to re-analyze files: all, prompt-changed, model-changed, or stale. Each file is checked against the content-addressed promotion cache before any LLM call: if a previously-analyzed file held the same blob-sha under the current prompt+model, its analysis is copied across with :prov/promoted-from lineage. The result reports files_analyzed, files_promoted, files_skipped. Pass no_promote=true to bypass the cache and always call the LLM. Requires a prior import."
     :inputSchema {:type "object"
                   :properties (merge repo-path-prop
-                                     {"provider" {:type "string"
-                                                  :description "LLM provider: glm or claude-api (alias: claude)"}
-                                      "model" {:type "string"
-                                               :description "Model alias (e.g. sonnet, haiku, opus)"}
+                                     {"model" {:type "string"
+                                               :description "Model id to send to NOUMENON_LLM_BASE_URL (overrides the daemon's default)"}
                                       "concurrency" {:type "integer"
                                                      :description "Number of concurrent LLM calls (default: 3, max: 20)"}
                                       "max_files" {:type "integer"
@@ -125,27 +122,17 @@
     :description "Identify architectural components from analyzed codebase data. Queries the knowledge graph for file summaries, import graph, and directory structure, then uses an LLM to identify components, classify files (layer, category, patterns, purpose), and map dependencies. Language-agnostic. Requires a prior analyze."
     :inputSchema {:type "object"
                   :properties (merge repo-path-prop
-                                     {"provider" {:type "string"
-                                                  :description "LLM provider: glm or claude-api"}
-                                      "model" {:type "string"
-                                               :description "Model alias (e.g. sonnet, haiku, opus)"}})
+                                     {"model" {:type "string"
+                                               :description "Model id to send to NOUMENON_LLM_BASE_URL (overrides the daemon's default)"}})
                   :required ["repo_path"]}}
    {:name "noumenon_list_databases"
     :description "List all noumenon databases with entity counts, pipeline stages, and cost."
     :inputSchema {:type "object" :properties {}}}
-   {:name "noumenon_llm_providers"
-    :description "List configured LLM providers, their available models, and defaults. Uses NOUMENON_LLM_PROVIDERS_EDN and NOUMENON_DEFAULT_PROVIDER."
-    :inputSchema {:type "object" :properties {}}}
-   {:name "noumenon_llm_models"
-    :description "List available models for a provider. Tries provider API first and falls back to configured :models."
-    :inputSchema {:type "object"
-                  :properties {"provider" {:type "string" :description "Provider name (optional; defaults to configured default provider)"}}}}
    {:name "noumenon_benchmark_run"
     :description "Run a benchmark comparing LLM answers across knowledge graph layers. WARNING: Expensive — uses many LLM calls. Use max_questions to limit scope."
     :inputSchema {:type "object"
                   :properties (merge repo-path-prop
-                                     {"provider" {:type "string" :description "LLM provider: glm or claude-api"}
-                                      "model" {:type "string" :description "Model alias (e.g. sonnet, haiku, opus)"}
+                                     {"model" {:type "string" :description "Model id to send to NOUMENON_LLM_BASE_URL (overrides the daemon's default)"}
                                       "max_questions" {:type "integer" :description "Limit to N questions (default: all). Use 2 for a quick canary test."}
                                       "layers" {:type "string" :description "Comma-separated layers: raw,import,enrich,full (default: raw,full)"}
                                       "report" {:type "boolean" :description "Generate Markdown report (default: false)"}})
@@ -168,8 +155,7 @@
     :description "Run the full Noumenon pipeline: import, enrich, analyze (LLM), synthesize, embed, and benchmark. WARNING: analyze, synthesize, and benchmark steps are expensive (LLM calls). Use skip_analyze, skip_synthesize, and skip_benchmark for a quick structural import. Each step is idempotent."
     :inputSchema {:type "object"
                   :properties (merge repo-path-prop
-                                     {"provider" {:type "string" :description "LLM provider"}
-                                      "model" {:type "string" :description "Model alias"}
+                                     {"model" {:type "string" :description "Model id to send to NOUMENON_LLM_BASE_URL"}
                                       "skip_import" {:type "boolean" :description "Skip the import+enrich step (either flag skips the combined step)"}
                                       "skip_enrich" {:type "boolean" :description "Skip the import+enrich step (either flag skips the combined step)"}
                                       "skip_analyze" {:type "boolean" :description "Skip analyze step"}
@@ -187,8 +173,7 @@
     :description "Run an autonomous self-improvement loop: propose prompt changes, evaluate via benchmark, keep improvements. WARNING: Expensive — runs multiple benchmark evaluations. Use max_iterations to limit scope."
     :inputSchema {:type "object"
                   :properties (merge repo-path-prop
-                                     {"provider" {:type "string" :description "LLM provider: glm or claude-api"}
-                                      "model" {:type "string" :description "Model alias (e.g. sonnet, haiku, opus)"}
+                                     {"model" {:type "string" :description "Model id to send to NOUMENON_LLM_BASE_URL"}
                                       "max_iterations" {:type "integer" :description "Max improvement iterations (default: 10)"}
                                       "max_hours" {:type "number" :description "Stop after N hours of wall-clock time"}
                                       "max_cost" {:type "number" :description "Stop when cost exceeds threshold (dollars)"}
@@ -201,8 +186,7 @@
     :description "Start an introspect run asynchronously in the background. Returns a run-id immediately. Use noumenon_introspect_status to check progress and noumenon_introspect_stop to halt."
     :inputSchema {:type "object"
                   :properties (merge repo-path-prop
-                                     {"provider" {:type "string" :description "LLM provider"}
-                                      "model" {:type "string" :description "Model alias"}
+                                     {"model" {:type "string" :description "Model id to send to NOUMENON_LLM_BASE_URL"}
                                       "max_iterations" {:type "integer" :description "Max iterations (default: 10)"}
                                       "max_hours" {:type "number" :description "Stop after N hours"}
                                       "max_cost" {:type "number" :description "Cost threshold"}

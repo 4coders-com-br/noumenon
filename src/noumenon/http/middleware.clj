@@ -319,10 +319,11 @@
                                     (log! "sse/error" (.getMessage e))
                                     (server/send! ch (sse-event "error" {:message "Internal server error"}) true))))))}))))
 
-;; --- Provider/model resolution ---
+;; --- Model resolution ---
 
-(defn resolve-provider
-  "Resolve provider and model from request params with config defaults."
+(defn resolve-model
+  "Resolve the model id from request params, falling back to the daemon's
+   configured default (NOUMENON_LLM_MODEL). Returns {:model ...} suitable for
+   merging into LLM-factory option maps."
   [params config]
-  {:provider (or (:provider params) (:provider config))
-   :model    (or (:model params) (:model config))})
+  {:model (or (:model params) (:model config))})

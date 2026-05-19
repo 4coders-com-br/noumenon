@@ -60,7 +60,7 @@
 
 (defn do-analyze
   "Run the analyze subcommand."
-  [{:keys [repo-path model provider reanalyze] :as opts}]
+  [{:keys [repo-path model reanalyze] :as opts}]
   (when (and reanalyze (not (sync/valid-reanalyze-scopes reanalyze)))
     (cu/print-error! (str "Invalid --reanalyze scope: " reanalyze
                           ". Must be one of: all, prompt-changed, model-changed, stale"))
@@ -72,13 +72,13 @@
         (cu/with-existing-db
           ctx
           (fn [{:keys [conn meta-db]}]
-            (let [{:keys [prompt-fn model-id provider-kw]}
-                  (llm/wrap-as-prompt-fn-from-opts {:provider provider :model model})
+            (let [{:keys [prompt-fn model-id provider]}
+                  (llm/wrap-as-prompt-fn-from-opts {:model model})
                   prompt-hash (analyze/prompt-hash (:template (analyze/load-prompt-template meta-db)))]
               (sync/prepare-reanalysis! conn (d/db conn) reanalyze
                                         {:prompt-hash prompt-hash :model-id model-id})
               (let [result (analyze/analyze-repo! conn repo-path prompt-fn
-                                                  (build-analyze-opts opts model-id (name provider-kw) meta-db))]
+                                                  (build-analyze-opts opts model-id provider meta-db))]
                 (log! (str "Next: run '" cli/program-name " query <query-name> " repo-path
                            "' or '" cli/program-name " ask -q \"...\" " repo-path
                            "' to explore the knowledge graph."))
@@ -110,7 +110,7 @@
 
 (defn do-synthesize
   "Run the synthesize subcommand."
-  [{:keys [model provider] :as opts}]
+  [{:keys [model] :as opts}]
   (cu/with-valid-repo
     opts
     (fn [ctx]
@@ -119,13 +119,13 @@
           ctx
           (fn [{:keys [conn meta-db repo-path db-name]}]
             (artifacts/reseed! (db/ensure-meta-db (:db-dir ctx)))
-            (let [{:keys [prompt-fn model-id provider-kw]}
-                  (llm/wrap-as-prompt-fn-from-opts {:provider provider :model model
+            (let [{:keys [prompt-fn model-id provider]}
+                  (llm/wrap-as-prompt-fn-from-opts {:model model
                                                     :max-tokens 16384})
                   result (synthesize/synthesize-repo!
                           conn prompt-fn
                           {:meta-db   meta-db
-                           :provider  (name provider-kw)
+                           :provider  provider
                            :model-id  model-id
                            :repo-name db-name})]
               (log! (str "Next: run '" cli/program-name " query components " repo-path

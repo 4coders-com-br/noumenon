@@ -1,86 +1,21 @@
 (ns noumenon.llm
+  "LLM invocation against any Anthropic-Messages-API-compatible endpoint.
+
+   Configuration collapses to three env vars:
+     NOUMENON_LLM_BASE_URL  (required)  endpoint, e.g. https://api.anthropic.com
+     NOUMENON_LLM_API_KEY   (required)  bearer / x-api-key value
+     NOUMENON_LLM_MODEL     (optional)  default model id, used when caller omits :model
+
+   Credentials resolve from env first, then from `~/.noumenon/credentials`
+   as a fallback. The file fallback is gated by the JVM system property
+   `noumenon.allow-file-credentials` (default \"true\"). The HTTP daemon sets
+   it to \"false\" at startup when bound to anything other than 127.0.0.1, so
+   shared-service deployments cannot leak a user's on-disk credentials."
   (:require [clojure.data.json :as json]
-            [clojure.edn :as edn]
             [clojure.string :as str]
-            [noumenon.util :refer [log! truncate]]
+            [noumenon.util :as util :refer [log! truncate]]
             [org.httpkit.client :as http])
   (:import [java.net URI]))
-
-;; --- Provider/model defaults ---
-
-(def default-provider "glm")
-(def provider-aliases
-  {"claude" "claude-api"})
-
-(def canonical-providers
-  #{"glm" "claude-api"})
-
-(defn- getenv
-  [k]
-  (System/getenv k))
-
-(defn- parse-provider-map
-  []
-  (if-let [raw (getenv "NOUMENON_LLM_PROVIDERS_EDN")]
-    (let [parsed (try
-                   (edn/read-string raw)
-                   (catch Exception e
-                     (throw (ex-info "NOUMENON_LLM_PROVIDERS_EDN contains invalid EDN"
-                                     {:env-var "NOUMENON_LLM_PROVIDERS_EDN"}
-                                     e))))]
-      (when-not (map? parsed)
-        (throw (ex-info "NOUMENON_LLM_PROVIDERS_EDN must be an EDN map"
-                        {:env-var "NOUMENON_LLM_PROVIDERS_EDN"})))
-      parsed)
-    {}))
-
-(defn- configured-provider-names
-  []
-  (->> (parse-provider-map)
-       keys
-       (filter keyword?)
-       (remove #{:default-provider})
-       (map name)
-       set))
-
-(defn supported-provider-names
-  []
-  (sort (into canonical-providers (configured-provider-names))))
-
-(defn default-provider-name
-  []
-  (let [providers-edn (parse-provider-map)
-        env-default   (getenv "NOUMENON_DEFAULT_PROVIDER")
-        map-default   (some-> (:default-provider providers-edn) name)
-        selected      (or env-default map-default default-provider)]
-    (if ((set (supported-provider-names)) selected)
-      selected
-      (throw (ex-info (str "Default provider is not supported: " selected)
-                      {:provider selected :known (supported-provider-names)})))))
-
-(defn normalize-provider-name
-  "Normalize provider name string to canonical form.
-   Returns nil when the input is not a supported provider."
-  [provider]
-  (when provider
-    (let [normalized (get provider-aliases provider provider)
-          providers  (set (supported-provider-names))]
-      (when (providers normalized)
-        normalized))))
-
-(defn provider->kw
-  "Convert a provider string/keyword to canonical provider keyword.
-   Throws on unrecognized provider strings."
-  [provider]
-  (let [provider-name (if (keyword? provider) (name provider) provider)
-        normalized    (normalize-provider-name provider-name)]
-    (when-not normalized
-      (throw (ex-info (str (if (= "claude-cli" provider-name)
-                             "Provider claude-cli has been removed. Use claude-api (or claude) and configure an API key."
-                             (str "Unrecognized provider: " provider-name
-                                  ". Known providers: " (str/join ", " (supported-provider-names)))))
-                      {:provider provider-name :known (supported-provider-names)})))
-    (keyword normalized)))
 
 ;; --- Pricing ---
 
@@ -88,8 +23,8 @@
   "Per-token pricing in $/1M tokens for direct Anthropic API models.
    Keys are matched as prefixes against the model id returned by the
    provider, so both bare names (claude-sonnet-4-6) and date-stamped
-   ids (claude-sonnet-4-6-20250514) hit the same entry. GLM and other
-   quota-priced providers return 0."
+   ids (claude-sonnet-4-6-20250514) hit the same entry. Unknown models
+   (anything not prefix-matched) return 0."
   {"claude-sonnet-4-6" {:input 3.0  :output 15.0}
    "claude-haiku-4-5"  {:input 0.80 :output 4.0}
    "claude-opus-4-6"   {:input 15.0 :output 75.0}
@@ -115,6 +50,73 @@
   "Sum two usage maps. Treats nil as zero-usage."
   [a b]
   (merge-with + (or a zero-usage) (or b zero-usage)))
+
+;; --- Config resolution ---
+
+(def ^:private file-fallback-property "noumenon.allow-file-credentials")
+
+(defn- file-fallback-enabled?
+  "True unless the JVM was explicitly told to skip ~/.noumenon/credentials."
+  []
+  (not= "false" (System/getProperty file-fallback-property "true")))
+
+(defn- normalize-base-url
+  [base-url]
+  (some-> base-url str/trim (str/replace #"/+$" "")))
+
+(defn resolve-llm-config
+  "Resolve {:base-url :api-key :model} from env, then ~/.noumenon/credentials
+   if the file-fallback gate is open. Returns the map; callers that need
+   base-url and api-key must check those keys themselves — `make-messages-fn`
+   does that at invocation time so missing values produce a clean message
+   naming the variable."
+  []
+  (let [file-creds (if (file-fallback-enabled?) (util/read-credentials-file) {})
+        pick (fn [var-name]
+               (or (not-empty (util/env var-name))
+                   (not-empty (get file-creds var-name))))]
+    {:base-url (normalize-base-url (pick "NOUMENON_LLM_BASE_URL"))
+     :api-key  (pick "NOUMENON_LLM_API_KEY")
+     :model    (pick "NOUMENON_LLM_MODEL")}))
+
+(defn- missing-var-message
+  [var-name]
+  (str "Missing " var-name ". Set the env var, "
+       "or add `" var-name "=<value>` to ~/.noumenon/credentials and run `noum setup` "
+       "(file is consulted automatically when present)."))
+
+(defn- require-base-url! [base-url]
+  (when (str/blank? base-url)
+    (throw (ex-info (missing-var-message "NOUMENON_LLM_BASE_URL")
+                    {:env-var "NOUMENON_LLM_BASE_URL"})))
+  base-url)
+
+(defn- require-api-key! [api-key]
+  (when (str/blank? api-key)
+    (throw (ex-info (missing-var-message "NOUMENON_LLM_API_KEY")
+                    {:env-var "NOUMENON_LLM_API_KEY"})))
+  api-key)
+
+(defn- require-model! [model]
+  (when (str/blank? model)
+    (throw (ex-info (str "No model selected. Pass --model, set NOUMENON_LLM_MODEL, "
+                         "or add NOUMENON_LLM_MODEL=<id> to ~/.noumenon/credentials.")
+                    {:env-var "NOUMENON_LLM_MODEL"})))
+  model)
+
+(defn- base-url-host
+  "Extract the host[:port] portion of a base URL, for provenance tagging.
+   Falls back to the raw URL on parse failure."
+  [base-url]
+  (try
+    (let [uri  (URI. base-url)
+          host (.getHost uri)
+          port (.getPort uri)]
+      (cond
+        (and host (pos? port)) (str host ":" port)
+        host                   host
+        :else                  base-url))
+    (catch Exception _ base-url)))
 
 ;; --- Direct API invocation ---
 
@@ -201,269 +203,18 @@
           :fail  (throw (failure-ex resp attempt))
           :ok    (parse-api-response (:body resp) start-ms))))))
 
-;; --- Model aliases ---
-
-(def model-aliases
-  "Map of short alias to full Anthropic model ID."
-  {"sonnet" "claude-sonnet-4-6-20250514"
-   "haiku"  "claude-haiku-4-5-20251001"
-   "opus"   "claude-opus-4-6-20250514"})
-
-(def known-model-ids
-  "Set of all recognized model IDs (full IDs and aliases)."
-  (into (set (keys model-aliases)) (vals model-aliases)))
-
-(defn model-alias->id
-  "Map model alias to full model ID for Anthropic API.
-   Throws on unrecognized model strings."
-  [alias]
-  (when-not (known-model-ids alias)
-    (throw (ex-info (str "Unrecognized model: " alias
-                         ". Known models: " (str/join ", " (sort known-model-ids)))
-                    {:model alias :known (sort known-model-ids)})))
-  (get model-aliases alias alias))
-
-;; --- Provider factory ---
-
-(def ^:private api-provider-config
-  {:glm       {:env-var  "NOUMENON_ZAI_TOKEN"
-               :base-url "https://api.z.ai/api/anthropic"
-               :models-path "/v1/models"}
-   :claude-api {:env-var  "ANTHROPIC_API_KEY"
-                :base-url "https://api.anthropic.com"
-                :models-path "/v1/models"}})
-
-(def ^:private runtime-modes #{"local" "service"})
-
-(defn- runtime-mode
-  []
-  (let [mode (or (getenv "NOUMENON_RUNTIME_MODE") "local")]
-    (when-not (runtime-modes mode)
-      (throw (ex-info (str "Invalid NOUMENON_RUNTIME_MODE: " mode
-                           ". Expected one of: " (str/join ", " (sort runtime-modes)))
-                      {:runtime-mode mode :known (sort runtime-modes)})))
-    mode))
-
-(defn- service-mode?
-  []
-  (= "service" (runtime-mode)))
-
-(defn- read-env-var
-  [env-var]
-  (getenv env-var))
-
-(defn- parse-edn-env
-  [env-var]
-  (when-let [raw (getenv env-var)]
-    (try
-      (edn/read-string raw)
-      (catch Exception e
-        (throw (ex-info (str env-var " contains invalid EDN")
-                        {:env-var env-var}
-                        e))))))
-
-(defn- provider-map-config
-  [provider-kw]
-  (get (parse-provider-map) provider-kw))
-
-(defn provider-catalog
-  []
-  (let [names     (supported-provider-names)
-        default-p (default-provider-name)]
-    {:default-provider default-p
-     :providers        (into {}
-                             (map (fn [provider-name]
-                                    (let [provider-kw  (keyword provider-name)
-                                          configured   (provider-map-config provider-kw)
-                                          configured-models (:models configured)
-                                          default-model (:default-model configured)]
-                                      [provider-name {:default?      (= provider-name default-p)
-                                                      :default-model default-model
-                                                      :models        (or configured-models [])}])))
-                             names)}))
-
-(defn- model-id-from-entry
-  [entry]
-  (or (:id entry) (:name entry) (:model entry)))
-
-(defn- parse-models-response
-  [body]
-  (let [parsed (json/read-str body :key-fn keyword)
-        data   (cond
-                 (vector? parsed) parsed
-                 (vector? (:data parsed)) (:data parsed)
-                 :else [])]
-    (->> data
-         (map model-id-from-entry)
-         (filter string?)
-         vec)))
-
-(defn- models-url
-  [provider-kw base-url]
-  (let [configured (provider-map-config provider-kw)
-        path       (or (:models-path configured)
-                       (:models-path (api-provider-config provider-kw)))]
-    (when path
-      (str (str/replace (str/trim base-url) #"/+$" "") path))))
-
-(defn discover-provider-models
-  ([provider] (discover-provider-models provider {}))
-  ([provider {:keys [timeout-ms] :or {timeout-ms 15000}}]
-   (let [provider-kw              (provider->kw provider)
-         configured               (provider-map-config provider-kw)
-         {:keys [env-var base-url]} (api-provider-config provider-kw)
-         resolved-url             (or (:base-url configured) base-url)
-         api-key                  (or (:api-key configured) (read-env-var env-var))
-         url                      (models-url provider-kw resolved-url)
-         fallback                 (vec (:models configured []))]
-     (if-not url
-       {:provider      (name provider-kw)
-        :default-model (:default-model configured)
-        :models        fallback
-        :source        :config}
-       (try
-         (let [{:keys [status body error]} @(http/request {:url url
-                                                           :method :get
-                                                           :headers {"x-api-key" api-key
-                                                                     "anthropic-version" "2023-06-01"}
-                                                           :timeout timeout-ms})]
-           (if (or error (not= 200 status))
-             {:provider      (name provider-kw)
-              :default-model (:default-model configured)
-              :models        fallback
-              :source        :config
-              :warning       (str "Model discovery unavailable (HTTP " status "), using configured fallback")}
-             (let [models (parse-models-response body)]
-               {:provider      (name provider-kw)
-                :default-model (:default-model configured)
-                :models        (if (seq models) models fallback)
-                :source        (if (seq models) :api :config)})))
-         (catch Exception _
-           {:provider      (name provider-kw)
-            :default-model (:default-model configured)
-            :models        fallback
-            :source        :config
-            :warning       "Model discovery failed, using configured fallback"}))))))
-
-(defn- provider-default-model
-  [provider-kw]
-  (:default-model (provider-map-config provider-kw)))
-
-(defn- provider-models
-  [provider-kw]
-  (:models (provider-map-config provider-kw)))
-
-(defn- normalize-model-name
-  [model-name]
-  (if (known-model-ids model-name)
-    (model-alias->id model-name)
-    model-name))
-
-(defn- configured-model-set
-  [provider-kw]
-  (some->> (provider-models provider-kw)
-           (map normalize-model-name)
-           set))
-
-(defn- resolve-model-id
-  [provider-kw model]
-  (let [configured    (configured-model-set provider-kw)
-        default-model (provider-default-model provider-kw)
-        selected      (or model default-model)
-        resolved   (normalize-model-name selected)]
-    (when-not selected
-      (let [msg (str "No model selected for provider " (name provider-kw)
-                     ". Set :default-model in NOUMENON_LLM_PROVIDERS_EDN or pass --model.")]
-        (throw (ex-info msg
-                        {:status 400 :message msg :user-message msg
-                         :provider provider-kw}))))
-    (when (and default-model (seq configured)
-               (not (configured (normalize-model-name default-model))))
-      (let [msg (str "Configured :default-model is not listed in :models for provider " (name provider-kw))]
-        (throw (ex-info msg
-                        {:status 400 :message msg :user-message msg
-                         :provider provider-kw :default-model default-model
-                         :allowed (sort configured)}))))
-    (when (and (seq configured) (not (configured resolved)))
-      (let [msg (str "Model " resolved " is not configured for provider " (name provider-kw))]
-        (throw (ex-info msg
-                        {:status 400 :message msg :user-message msg
-                         :provider provider-kw :model resolved
-                         :allowed (sort configured)}))))
-    resolved))
-
-(defn- normalize-base-url
-  [base-url]
-  (when base-url
-    (str/replace (str/trim base-url) #"/+$" "")))
-
-(defn- valid-absolute-url?
-  [s]
-  (try
-    (let [uri (URI. s)]
-      (and (.isAbsolute uri) (seq (.getHost uri))))
-    (catch Exception _
-      false)))
-
-(defn- parse-allowlist
-  []
-  (let [allowlist (parse-edn-env "NOUMENON_LLM_BASE_URL_ALLOWLIST_EDN")]
-    (when (and allowlist (not (sequential? allowlist)))
-      (throw (ex-info "NOUMENON_LLM_BASE_URL_ALLOWLIST_EDN must be a sequential EDN value"
-                      {:env-var "NOUMENON_LLM_BASE_URL_ALLOWLIST_EDN"})))
-    (set (map str allowlist))))
-
-(defn- allowlisted-host?
-  [host allowlist]
-  (or (empty? allowlist)
-      (contains? allowlist host)
-      (some #(and (str/starts-with? % "*.")
-                  (str/ends-with? host (subs % 1)))
-            allowlist)))
-
-(defn- validate-base-url!
-  [provider-kw base-url]
-  (when-not (valid-absolute-url? base-url)
-    (throw (ex-info (str "Invalid base URL for provider " (name provider-kw) ": must be absolute")
-                    {:provider provider-kw})))
-  (let [uri      (URI. base-url)
-        scheme   (.getScheme uri)
-        host     (.getHost uri)
-        allowset (parse-allowlist)]
-    (when (and (service-mode?) (not= "https" (str/lower-case scheme)))
-      (throw (ex-info (str "Service mode requires https base URL for provider " (name provider-kw))
-                      {:provider provider-kw})))
-    (when-not (allowlisted-host? host allowset)
-      (throw (ex-info (str "Base URL host is not allowlisted for provider " (name provider-kw))
-                      {:provider provider-kw :host host}))))
-  base-url)
-
-(defn resolve-provider-config
-  "Resolve provider configuration to {:base-url :api-key} with precedence:
-   providers EDN map -> process env vars -> default base URL."
-  [provider]
-  (let [provider-kw (provider->kw provider)
-        {:keys [env-var base-url]} (api-provider-config provider-kw)
-        provider-edn  (provider-map-config provider-kw)
-        resolved-url  (normalize-base-url (or (:base-url provider-edn) base-url))
-        resolved-key  (or (:api-key provider-edn) (read-env-var env-var))]
-    (when-not resolved-key
-      (throw (ex-info (str "Missing API key for provider " (name provider-kw)
-                           ". Set :api-key in NOUMENON_LLM_PROVIDERS_EDN or " env-var)
-                      {:provider provider-kw})))
-    {:base-url (validate-base-url! provider-kw resolved-url)
-     :api-key  resolved-key}))
+;; --- Factory ---
 
 (defn make-messages-fn
-  "Create an invoke function for the given provider.
+  "Create an invoke function for the configured endpoint.
    Returns (fn [messages & [opts]]) where messages is
    [{:role \"user\"/\"assistant\" :content string} ...].
    Optional opts map supports :system (string) for prompt caching.
-   Provider :glm — direct API via Z.ai proxy, reads NOUMENON_ZAI_TOKEN.
-   Provider :claude-api — direct API to Anthropic, reads ANTHROPIC_API_KEY."
-  [provider {:keys [model temperature max-tokens]}]
-  (let [kw (provider->kw provider)
-        {:keys [base-url api-key]} (resolve-provider-config kw)]
+   Resolves base URL and API key from env / ~/.noumenon/credentials at call time."
+  [{:keys [model temperature max-tokens]}]
+  (let [{:keys [base-url api-key]} (resolve-llm-config)
+        base-url (require-base-url! base-url)
+        api-key  (require-api-key!  api-key)]
     (fn invoke
       ([messages] (invoke messages nil))
       ([messages opts]
@@ -481,29 +232,27 @@
   (fn [prompt]
     (invoke-fn [{:role "user" :content prompt}])))
 
-(defn resolve-opts
-  "Resolve provider/model from option defaults. Returns map with :provider-kw
-    and :model-id — the canonical, validated identifiers."
-  [{:keys [provider model]}]
-  (let [provider-kw (provider->kw (or provider (default-provider-name)))]
-    {:provider-kw provider-kw
-     :model-id    (resolve-model-id provider-kw model)}))
-
 (defn make-messages-fn-from-opts
-  "Build a messages-based invoke-fn from provider/model options.
-   Returns {:invoke-fn fn, :model-id string, :provider-kw keyword}."
-  [{:keys [temperature max-tokens] :as opts}]
-  (let [{:keys [provider-kw model-id]} (resolve-opts opts)]
-    {:invoke-fn  (make-messages-fn provider-kw
-                                   (cond-> {:model model-id}
+  "Build a messages-based invoke-fn from caller opts.
+   `opts` is {:model :temperature :max-tokens}; :model falls back to NOUMENON_LLM_MODEL.
+   Returns {:invoke-fn fn, :model-id string, :provider string}.
+   :provider is the base-URL host (e.g. \"api.anthropic.com\") — kept as a
+   provenance tag for analyze/synthesize transactions, NOT used to dispatch."
+  [{:keys [model temperature max-tokens]}]
+  (let [config   (resolve-llm-config)
+        _        (require-base-url! (:base-url config))
+        _        (require-api-key!  (:api-key  config))
+        model-id (require-model! (or model (:model config)))
+        host     (base-url-host (:base-url config))]
+    {:invoke-fn  (make-messages-fn (cond-> {:model model-id}
                                      temperature (assoc :temperature temperature)
                                      max-tokens  (assoc :max-tokens max-tokens)))
      :model-id   model-id
-     :provider-kw provider-kw}))
+     :provider   host}))
 
 (defn wrap-as-prompt-fn-from-opts
-  "Build a prompt-fn (string->result) from provider/model options.
-   Returns {:prompt-fn fn, :model-id string, :provider-kw keyword}."
+  "Build a prompt-fn (string->result) from caller opts.
+   Returns {:prompt-fn fn, :model-id string, :provider string}."
   [opts]
   (let [{:keys [invoke-fn] :as resolved} (make-messages-fn-from-opts opts)]
     (-> resolved

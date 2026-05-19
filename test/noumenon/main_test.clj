@@ -175,8 +175,7 @@
   ;; --resume without value defaults to "latest"
   ;; Use a temp checkpoint dir to avoid stale files from real runs
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-resume-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--db-dir" tmp-dir "." "--resume"])]
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--db-dir" tmp-dir "." "--resume"])]
     (is (= 1 exit))
     (is (or (str/includes? stderr "No checkpoint files found")
             (str/includes? stderr "No database found")))))
@@ -184,8 +183,7 @@
 (deftest benchmark-resume-specific-run-id
   (let [fake-id "1234-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
         tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-resume-id-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--db-dir" tmp-dir "--resume" fake-id "."])]
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--db-dir" tmp-dir "--resume" fake-id "."])]
     (is (= 1 exit))
     (is (or (str/includes? stderr (str "Checkpoint not found: " fake-id))
             (str/includes? stderr "No database found")))))
@@ -212,8 +210,7 @@
 
 (deftest benchmark-no-database
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-bench-test-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--db-dir" tmp-dir repo-path])]
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--db-dir" tmp-dir repo-path])]
     (is (= 1 exit))
     (is (str/includes? stderr "No database found"))))
 
@@ -223,73 +220,31 @@
   ;; --model with no database is fine — we just check that parsing succeeds and
   ;; we get to the "no database" error rather than an unknown-flag error
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-model-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--model" "haiku" "--db-dir" tmp-dir repo-path])]
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--model" "haiku" "--db-dir" tmp-dir repo-path])]
     (is (= 1 exit))
     (is (str/includes? stderr "No database found"))))
 
 (deftest benchmark-judge-model-flag-parsed
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-jm-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--judge-model" "haiku"
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--judge-model" "haiku"
                                               "--db-dir" tmp-dir repo-path])]
     (is (= 1 exit))
     (is (str/includes? stderr "No database found"))))
-
-(deftest benchmark-provider-flag-parsed
-  (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-prov-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--db-dir" tmp-dir repo-path])]
-    (is (= 1 exit))
-    (is (str/includes? stderr "No database found"))))
-
-(deftest benchmark-provider-aliases-are-accepted
-  (doseq [provider ["claude" "claude-api" "glm"]]
-    (let [tmp-dir (str (System/getProperty "java.io.tmpdir")
-                       "/noumenon-prov-alias-" provider "-" (random-uuid))
-          {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" provider
-                                                "--db-dir" tmp-dir repo-path])]
-      (is (= 1 exit))
-      (is (or (str/includes? stderr "No database found")
-              (str/includes? stderr "NOUMENON_ZAI_TOKEN")
-              (str/includes? stderr "ANTHROPIC_API_KEY"))))))
-
-(deftest benchmark-invalid-provider
-  (let [{:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "openai" "."])]
-    (is (= 1 exit))
-    (is (str/includes? stderr "Invalid --provider"))))
 
 (deftest benchmark-missing-model-value
   (let [{:keys [exit stderr]} (run-capturing ["benchmark" "--model"])]
     (is (= 1 exit))
     (is (str/includes? stderr "Missing value for --model"))))
 
-(defn- glm-token-available?
-  "Check if GLM token is available via env var or .env file."
-  []
-  (or (System/getenv "NOUMENON_ZAI_TOKEN")
-      (let [env-file (java.io.File. ".env")]
-        (when (.exists env-file)
-          (some #(re-matches #"(?:export\s+)?NOUMENON_ZAI_TOKEN=(.+)"
-                             (str/trim %))
-                (str/split-lines (slurp env-file)))))))
-
-(deftest benchmark-glm-without-token
-  ;; GLM provider without NOUMENON_ZAI_TOKEN should fail fast
-  ;; Only runs when no token is available (env or .env file)
-  (when-not (glm-token-available?)
-    (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-glm-" (random-uuid))]
-      ;; Import first so we have a database
-      (run-capturing ["import" "--db-dir" tmp-dir repo-path])
-      (let [{:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "glm"
-                                                  "--db-dir" tmp-dir repo-path])]
-        (is (= 1 exit))
-        (is (str/includes? stderr "NOUMENON_ZAI_TOKEN"))))))
+(deftest benchmark-provider-flag-removed
+  (testing "--provider was removed; the flag is no longer recognized"
+    (let [{:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude" "."])]
+      (is (= 1 exit))
+      (is (str/includes? stderr "Unknown option: --provider")))))
 
 (deftest benchmark-max-cost-flag-parsed
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-maxcost-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--max-cost" "5.00"
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--max-cost" "5.00"
                                               "--db-dir" tmp-dir repo-path])]
     (is (= 1 exit))
     (is (str/includes? stderr "No database found"))))
@@ -303,8 +258,7 @@
 
 (deftest benchmark-concurrency-flag-parsed
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-conc-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--concurrency" "4"
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--concurrency" "4"
                                               "--db-dir" tmp-dir repo-path])]
     (is (= 1 exit))
     (is (str/includes? stderr "No database found"))))
@@ -331,16 +285,14 @@
 
 (deftest benchmark-min-delay-flag-parsed
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-delay-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--min-delay" "200"
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--min-delay" "200"
                                               "--db-dir" tmp-dir repo-path])]
     (is (= 1 exit))
     (is (str/includes? stderr "No database found"))))
 
 (deftest benchmark-min-delay-zero-valid
   (let [tmp-dir (str (System/getProperty "java.io.tmpdir") "/noumenon-delay0-" (random-uuid))
-        {:keys [exit stderr]} (run-capturing ["benchmark" "--provider" "claude"
-                                              "--min-delay" "0"
+        {:keys [exit stderr]} (run-capturing ["benchmark" "--min-delay" "0"
                                               "--db-dir" tmp-dir repo-path])]
     (is (= 1 exit))
     (is (str/includes? stderr "No database found"))))

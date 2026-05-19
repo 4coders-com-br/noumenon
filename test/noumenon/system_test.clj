@@ -5,11 +5,17 @@
             [noumenon.system :as system]
             [noumenon.util :as util]))
 
+(def ^:private stub-llm-env
+  {"NOUMENON_LLM_BASE_URL" "https://api.anthropic.com"
+   "NOUMENON_LLM_API_KEY"  "stub-key"})
+
 (defn- with-tmp-system [opts f]
-  (let [tmp     (str (System/getProperty "java.io.tmpdir")
-                     "/noumenon-system-test-" (random-uuid))
-        sys     (system/init (merge {:port 0 :bind "127.0.0.1" :db-dir tmp} opts))]
-    (try (f sys) (finally (system/halt! sys)))))
+  (let [tmp (str (System/getProperty "java.io.tmpdir")
+                 "/noumenon-system-test-" (random-uuid))
+        prior-env util/env]
+    (with-redefs [util/env (fn [k] (or (get stub-llm-env k) (prior-env k)))]
+      (let [sys (system/init (merge {:port 0 :bind "127.0.0.1" :db-dir tmp} opts))]
+        (try (f sys) (finally (system/halt! sys)))))))
 
 (deftest semaphore-permits-honor-system-config
   (testing "max-llm-concurrency from system/init reaches the running semaphore"

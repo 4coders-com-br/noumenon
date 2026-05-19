@@ -28,7 +28,7 @@
   "Run the full pipeline: import → enrich → analyze → synthesize → embed → benchmark.
    Each step is idempotent and can be skipped with --skip-* flags."
   [{:keys [skip-import skip-enrich skip-analyze skip-synthesize skip-benchmark
-           model provider concurrency max-questions layers report] :as opts}]
+           model concurrency max-questions layers report] :as opts}]
   (cu/with-valid-repo
     (update opts :repo-path cu/resolve-repo-path)
     (fn [{:keys [repo-path db-dir db-name]}]
@@ -39,9 +39,9 @@
               meta-db   (d/db meta-conn)
               repo-uri  (.getCanonicalPath (java.io.File. (str repo-path)))
               needs-llm (not (and skip-analyze skip-synthesize skip-benchmark))
-              {:keys [prompt-fn model-id provider-kw]}
+              {:keys [prompt-fn model-id provider]}
               (when needs-llm
-                (llm/wrap-as-prompt-fn-from-opts {:provider provider :model model}))
+                (llm/wrap-as-prompt-fn-from-opts {:model model}))
               selector  (select-keys opts [:path :include :exclude :lang])
               results   (atom {})
               t0        (System/currentTimeMillis)]
@@ -55,18 +55,18 @@
                                                       (assoc selector
                                                              :meta-db meta-db
                                                              :model-id model-id
-                                                             :provider (some-> provider-kw name)
+                                                             :provider provider
                                                              :concurrency (or concurrency 3))))
             (run-digest-step! results :calls "resolve calls"
                               #(calls/resolve-calls! conn)))
           (when-not skip-synthesize
             (let [synth-llm (llm/wrap-as-prompt-fn-from-opts
-                             {:provider provider :model model :max-tokens 16384})]
+                             {:model model :max-tokens 16384})]
               (run-digest-step! results :synthesize "synthesize"
                                 #(synthesize/synthesize-repo!
                                   conn (:prompt-fn synth-llm)
                                   {:meta-db   meta-db
-                                   :provider  (some-> (:provider-kw synth-llm) name)
+                                   :provider  (:provider synth-llm)
                                    :model-id  (:model-id synth-llm)
                                    :repo-name db-name}))))
           (run-digest-step! results :embed "embed"

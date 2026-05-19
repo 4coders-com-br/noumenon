@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### BREAKING CHANGES
+
+- **LLM configuration collapsed to two env vars (plus one optional)** — Noumenon used to carry a multi-provider router: an EDN-encoded provider map (`NOUMENON_LLM_PROVIDERS_EDN`), a default-provider selector (`NOUMENON_DEFAULT_PROVIDER`), per-provider env keys (`NOUMENON_ZAI_TOKEN`, `ANTHROPIC_API_KEY`), a runtime-mode toggle (`NOUMENON_RUNTIME_MODE`), an HTTPS allowlist (`NOUMENON_LLM_BASE_URL_ALLOWLIST_EDN`), model aliases (`sonnet`/`haiku`/`opus`), a `--provider` flag on every LLM-touching subcommand, `llm-providers`/`llm-models` CLI subcommands, and matching `noumenon_llm_providers`/`noumenon_llm_models` MCP tools. All of that is gone.
+
+  **What changed**
+
+  - **Replaced**: `NOUMENON_LLM_PROVIDERS_EDN`, `NOUMENON_DEFAULT_PROVIDER`, `NOUMENON_LLM_PROVIDER`, `NOUMENON_ZAI_TOKEN`, `ANTHROPIC_API_KEY`, `NOUMENON_RUNTIME_MODE`, and `NOUMENON_LLM_BASE_URL_ALLOWLIST_EDN` → with `NOUMENON_LLM_BASE_URL` (required), `NOUMENON_LLM_API_KEY` (required), and `NOUMENON_LLM_MODEL` (optional default for `--model`).
+  - **Removed**: the `--provider` flag on every subcommand; the `llm-providers` and `llm-models` CLI subcommands; the `noumenon_llm_providers` and `noumenon_llm_models` MCP tools; the `provider` property on every other MCP tool input schema; the `sonnet`/`haiku`/`opus` model aliases. `--model` now takes a raw model id and passes it through to the upstream endpoint verbatim.
+  - **Credentials file fallback**: `~/.noumenon/credentials` is now read directly by Noumenon as a fallback to env vars — no `source` step is needed. The fallback is automatically disabled when the HTTP daemon binds to anything other than `127.0.0.1`, so a shared-service deployment cannot pick up a user's on-disk credentials.
+
+  **Why**
+
+  Noumenon is not an LLM router. The provider-map config was an in-house mini-router that duplicated what dedicated tools — [OpenRouter](https://openrouter.ai), [LiteLLM](https://github.com/BerriAI/litellm), and any Anthropic-Messages-API-compatible gateway — do far better, with broader provider coverage and active maintenance. For multi-model flexibility, point `NOUMENON_LLM_BASE_URL` at one of those instead. This was the highest-friction surface in the codebase and the collapse removes ~300 lines of routing, validation, allowlisting, and discovery code with no loss of supported capability. The local single-user and headless shared-service deployment shapes are both still first-class — the daemon's bind address picks which credential-resolution policy applies.
+
+  **How to upgrade**
+
+  Pick the upstream and set three shell variables (or run `noum setup` to populate `~/.noumenon/credentials` interactively):
+
+  ```sh
+  # Anthropic direct
+  export NOUMENON_LLM_BASE_URL=https://api.anthropic.com
+  export NOUMENON_LLM_API_KEY=sk-ant-...
+  export NOUMENON_LLM_MODEL=claude-sonnet-4-6-20250514
+
+  # OpenRouter (Anthropic-compatible route)
+  export NOUMENON_LLM_BASE_URL=https://openrouter.ai/api/v1
+  export NOUMENON_LLM_API_KEY=sk-or-...
+  export NOUMENON_LLM_MODEL=anthropic/claude-sonnet-4-5
+
+  # Local LiteLLM (Anthropic-format proxy)
+  export NOUMENON_LLM_BASE_URL=http://localhost:4000
+  export NOUMENON_LLM_API_KEY=sk-litellm-master-...
+  export NOUMENON_LLM_MODEL=<the-name-you-defined-in-litellm-config.yaml>
+  ```
+
+  If you previously used `--provider claude --model sonnet`, drop `--provider` entirely and pass the full upstream-recognized model id via `--model` (or set `NOUMENON_LLM_MODEL`). Old env vars are not consulted — the launcher's `noum setup` wizard will prompt for the new ones.
+
 ## 0.11.1
 
 ### Fixes

@@ -41,8 +41,8 @@
           (mw/ok (run-import ctx nil)))))))
 
 (defn- run-analyze [{:keys [conn meta-db repo-path]} params config progress-fn]
-  (let [{:keys [prompt-fn model-id provider-kw]}
-        (llm/wrap-as-prompt-fn-from-opts (mw/resolve-provider params config))
+  (let [{:keys [prompt-fn model-id provider]}
+        (llm/wrap-as-prompt-fn-from-opts (mw/resolve-model params config))
         prompt-hash (analyze/prompt-hash (:template (analyze/load-prompt-template meta-db)))
         _           (sync/prepare-reanalysis! conn (d/db conn) (:reanalyze params)
                                               {:prompt-hash prompt-hash :model-id model-id})
@@ -52,7 +52,7 @@
                                            (cond-> (assoc selector
                                                           :meta-db meta-db
                                                           :model-id model-id
-                                                          :provider (name provider-kw)
+                                                          :provider provider
                                                           :concurrency concurrency
                                                           :no-promote? (boolean (:no_promote params))
                                                           :progress-fn progress-fn)
@@ -121,13 +121,13 @@
     (mw/with-repo params (:db-dir config)
       (fn [{:keys [conn meta-db repo-path]}]
         (let [opts (if (:analyze params)
-                     (let [{:keys [prompt-fn model-id provider-kw]}
+                     (let [{:keys [prompt-fn model-id provider]}
                            (llm/wrap-as-prompt-fn-from-opts
-                            (mw/resolve-provider params config))]
+                            (mw/resolve-model params config))]
                        (assoc (select-keys params [:path :include :exclude :lang])
                               :concurrency 8 :analyze? true
                               :meta-db meta-db :model-id model-id
-                              :provider (name provider-kw) :invoke-llm prompt-fn))
+                              :provider provider :invoke-llm prompt-fn))
                      (assoc (select-keys params [:path :include :exclude :lang])
                             :concurrency 8))
               result (sync/update-repo! conn repo-path repo-path opts)]
@@ -140,12 +140,12 @@
 
 (defn- run-synthesize [{:keys [conn meta-conn meta-db db-name]} params config progress-fn]
   (artifacts/reseed! meta-conn)
-  (let [{:keys [prompt-fn model-id provider-kw]}
+  (let [{:keys [prompt-fn model-id provider]}
         (llm/wrap-as-prompt-fn-from-opts
-         (assoc (mw/resolve-provider params config) :max-tokens synth-max-tokens))]
+         (assoc (mw/resolve-model params config) :max-tokens synth-max-tokens))]
     (when progress-fn (progress-fn {:current 0 :total 0 :message "Synthesizing architecture..."}))
     (synthesize/synthesize-repo! conn prompt-fn
-                                 {:meta-db meta-db :provider (name provider-kw)
+                                 {:meta-db meta-db :provider provider
                                   :model-id model-id :repo-name db-name})))
 
 (defn handle-synthesize [request config]
@@ -158,8 +158,8 @@
 
 (defn- run-digest [{:keys [conn meta-conn meta-db db-dir db-name repo-path]} params config progress-fn]
   (artifacts/reseed! meta-conn)
-  (let [{:keys [prompt-fn model-id provider-kw]}
-        (llm/wrap-as-prompt-fn-from-opts (mw/resolve-provider params config))
+  (let [{:keys [prompt-fn model-id provider]}
+        (llm/wrap-as-prompt-fn-from-opts (mw/resolve-model params config))
         step-progress (fn [step-name inner-fn]
                         (when progress-fn
                           (progress-fn {:current 0 :total 0 :message (str "digest: " step-name "...")}))
@@ -177,7 +177,7 @@
                                    #(let [r (analyze/analyze-repo! conn repo-path prompt-fn
                                                                    (assoc selector
                                                                           :meta-db meta-db :model-id model-id
-                                                                          :provider (name provider-kw)
+                                                                          :provider provider
                                                                           :concurrency 3
                                                                           :no-promote? (boolean (:no_promote params))
                                                                           :progress-fn (step-fn "analyze")))]
@@ -188,11 +188,11 @@
         synth-r   (when-not (:skip_synthesize params)
                     (step-progress "synthesize"
                                    #(let [synth-llm (llm/wrap-as-prompt-fn-from-opts
-                                                     (assoc (mw/resolve-provider params config)
+                                                     (assoc (mw/resolve-model params config)
                                                             :max-tokens synth-max-tokens))]
                                       (synthesize/synthesize-repo!
                                        conn (:prompt-fn synth-llm)
-                                       {:meta-db meta-db :provider (name provider-kw) :model-id model-id
+                                       {:meta-db meta-db :provider provider :model-id model-id
                                         :repo-name (last (str/split repo-path #"/"))}))))
         embed-r   (step-progress "embed"
                                  #(embed/build-index! (d/db conn) db-dir db-name))

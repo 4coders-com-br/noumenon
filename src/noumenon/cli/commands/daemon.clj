@@ -38,7 +38,6 @@
         sys (system/init {:port     (:port parsed 0)
                           :bind     (:bind parsed "127.0.0.1")
                           :db-dir   daemon-db-dir
-                          :provider (:provider parsed)
                           :model    (:model parsed)
                           :token    (:token parsed)
                           :max-llm-concurrency (:max-llm-concurrency parsed 10)})]

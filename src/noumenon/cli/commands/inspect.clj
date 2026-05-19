@@ -1,11 +1,10 @@
 (ns noumenon.cli.commands.inspect
-  "CLI handlers that inspect existing state — schema, status, LLM
-   provider/model catalog, and database listing."
+  "CLI handlers that inspect existing state — schema, status, and
+   database listing."
   (:require [clojure.string :as str]
             [noumenon.cli :as cli]
             [noumenon.cli.util :as cu]
             [noumenon.db :as db]
-            [noumenon.llm :as llm]
             [noumenon.query :as query]
             [noumenon.util :as util :refer [log!]]))
 
@@ -41,17 +40,6 @@
                        " -- db: " (:db-path stats)
                        head))
             {:exit 0 :result stats}))))))
-
-(defn do-llm-providers
-  "Show configured LLM providers, models, and defaults."
-  [_opts]
-  {:exit 0 :result (llm/provider-catalog)})
-
-(defn do-llm-models
-  "Show provider models using API discovery when available."
-  [opts]
-  (let [provider (or (:provider opts) (llm/default-provider-name))]
-    {:exit 0 :result (llm/discover-provider-models provider)}))
 
 (defn- format-date [inst]
   (when inst

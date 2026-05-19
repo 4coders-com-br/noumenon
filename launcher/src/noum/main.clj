@@ -308,7 +308,6 @@
           java-bin (str (fs/path jre-path "bin" "java"))
           args     (cond-> [java-bin "-jar" jar-path "serve"]
                      (:db-dir flags)   (into ["--db-dir" (:db-dir flags)])
-                     (:provider flags) (into ["--provider" (:provider flags)])
                      (:model flags)    (into ["--model" (:model flags)]))
           env      (cond-> (into {} (System/getenv))
                      (:token flags) (assoc "NOUMENON_TOKEN" (:token flags)))]

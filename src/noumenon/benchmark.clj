@@ -1285,7 +1285,7 @@
     {:checkpoint-dir checkpoint-dir
      :budget         budget
      :judge-llm      (or judge-llm invoke-llm)
-     :model-config   (or model-config {:provider "glm"})
+     :model-config   (or model-config {})
      :concurrency    (max 1 (min 20 concurrency))
      :min-delay-ms   (max 0 min-delay-ms)
      :mode           mode}))
@@ -1371,7 +1371,7 @@
        "**Date:** " (or date "unknown") "\n"
        "**Repository:** " repo-path "\n"
        "**Commit:** `" (or commit-sha "unknown") "`\n"
-       "**Model:** " model " (via " provider ")\n"
+       "**Model:** " model (when provider (str " (endpoint: " provider ")")) "\n"
        "**Layers:** " (str/join ", " (map name layers)) "\n"
        "**Mode:** " (pr-str mode) "\n"
        "**Status:** " status "\n"))
@@ -1487,7 +1487,7 @@
                 :repo-path repo-path
                 :commit-sha commit-sha
                 :model     (or resolved-model (:model model-config) "unknown")
-                :provider  (or (:provider model-config) "unknown")
+                :provider  (:provider model-config)
                 :layers    layers
                 :mode      mode
                 :status    status}
@@ -1649,15 +1649,15 @@
    the raw-context string, and an embed index. Skipped when nothing remains to run.
 
    `:isolated-llm` is only built when `model-config` carries an explicit
-   `:model` — without it `resolve-model-id` would throw on any provider
-   that lacks a `:default-model` setting (a brittle path for tests and
-   any caller that supplies an `invoke-llm` mock). When nil, `select-llm-fn`
-   falls back to the main `invoke-llm` for `:raw` stages."
+   `:model` — without it `resolve-llm-config` would throw because no
+   model is selected (a brittle path for tests and any caller that
+   supplies an `invoke-llm` mock). When nil, `select-llm-fn` falls back
+   to the main `invoke-llm` for `:raw` stages."
   [{:keys [layers has-remaining? model-config repo-path db-dir db-name]}]
   (let [has-raw?      (some #{:raw} layers)
         has-embedded? (some #{:embedded} layers)]
     {:isolated-llm (when (and has-raw? (:model model-config))
-                     (llm/make-isolated-prompt-fn (select-keys model-config [:provider :model])))
+                     (llm/make-isolated-prompt-fn (select-keys model-config [:model])))
      :raw-ctx      (when (and has-remaining? has-raw?) (raw-context repo-path))
      :embed-ctx    (when (and has-remaining? has-embedded?)
                      (embed/get-cached-index db-dir db-name))}))

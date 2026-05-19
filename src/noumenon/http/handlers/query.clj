@@ -20,7 +20,7 @@
 (defn- run-ask [{:keys [db meta-db meta-conn db-dir db-name]} params config progress-fn]
   (let [{:keys [invoke-fn]}
         (llm/make-messages-fn-from-opts
-         (merge (mw/resolve-provider params config)
+         (merge (mw/resolve-model params config)
                 {:temperature 0.3 :max-tokens 4096}))
         max-iter   (min (or (:max_iterations params) 10) 50)
         eidx       (embed/get-cached-index db-dir db-name)

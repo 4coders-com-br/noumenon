@@ -2,12 +2,56 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [datomic.client.api :as d]
+            ;; little-trader fork: peer API for the OPTIONAL universe-KG db
+            ;; (NOUMENON_KG_URI) — the ask agent's second database.
+            [datomic.api :as dp]
             [noumenon.analyze :as analyze]
             [noumenon.artifacts :as artifacts]
             [noumenon.embed :as embed]
             [noumenon.llm :as llm]
             [noumenon.model :as model]
             [noumenon.query :as query]))
+
+;; --- Universe KG (little-trader fork, KG-UNIVERSE-3) ---
+;; When NOUMENON_KG_URI is set (a datomic:sql:// URI), the ask agent gains a
+;; SECOND database: the project-knowledge universe KG (overseers, decisions,
+;; letters, slices, use-cases, capabilities, strategies, voters, sagas…).
+;; Queries opt in per-call with {:args {:db "kg"}}; everything else runs
+;; against the repo code graph exactly as before.
+
+(def ^:private kg-conn*
+  (memoize
+   (fn [uri]
+     (try (dp/connect uri)
+          (catch Throwable _ nil)))))
+
+(defn- kg-db
+  "The universe-KG db value when NOUMENON_KG_URI is configured and reachable;
+  nil otherwise — the ask agent is simply single-db again."
+  []
+  (when-let [uri (System/getenv "NOUMENON_KG_URI")]
+    (when-let [conn (kg-conn* uri)]
+      (try (dp/db conn) (catch Throwable _ nil)))))
+
+(def ^:private kg-schema-blurb
+  (str "\n\nADDITIONAL DATABASE — the project-knowledge universe KG.\n"
+       "Query it with {:tool :query :args {:query [...] :db \"kg\"}} (peer datalog, same syntax).\n"
+       "Namespaces: :overseer/* (the Alliance roster), :decision/*, :letter/*,\n"
+       ":epic/*, :slice/*, :use-case/*, :ruc/*, :property/*, :fixture/*, :drive/*,\n"
+       ":ui-note/*, :qa-doc/*, :capability/*, :ceremony/*, :runbook/*, :devops/*,\n"
+       ":cicd/*, :gate/*, :dependency/*, :security-note/*, :strategy/*, :voter/*,\n"
+       ":indicator/*, :venue/*, :trading-concept/*, :backtest/*, :doc/*, :wizard/*,\n"
+       ":mel-feature/*, :saga/*, :content/*, :arch-doc/*, :discipline/*, :bench-run/*,\n"
+       ":artifact/* (kind+ref anchors: issue/N, shas, file paths), :artifact.query/*\n"
+       "(named queries), :kg/owner (every entity's overseer), :kg/summary-status,\n"
+       ":tx/op, :tx/agent, :tx/source-sha.\n"
+       "Every concept has :<ns>/id (unique slug), most have :<ns>/title, :<ns>/summary,\n"
+       ":<ns>/body-path (canonical body lives in git), :<ns>/status, :<ns>/refs.\n"
+       "Example — what does an overseer own?\n"
+       "[:find ?a ?v :in $ ?oid [?a ...] :where [?e :kg/owner ?o] [?o :overseer/id ?oid] [?e ?a ?v]]\n"
+       "Example — decisions mentioning an artifact:\n"
+       "[:find ?id ?st :in $ ?ref :where [?d :decision/id ?id] [?d :decision/mentions ?a]\n"
+       " [?a :artifact/ref ?ref] [?d :decision/statement ?st]]\n"))
 
 ;; --- Query validation ---
 
@@ -111,9 +155,11 @@
                   "schema"    (query/schema-summary db)
                   "rules"     (pr-str (artifacts/load-rules meta-db))
                   "examples"  (format-examples meta-db)}]
-    (str/replace (artifacts/load-prompt meta-db "agent-system")
-                 #"\{\{([^}]+)\}\}"
-                 (fn [[match key]] (get bindings key match)))))
+    (str (str/replace (artifacts/load-prompt meta-db "agent-system")
+                      #"\{\{([^}]+)\}\}"
+                      (fn [[match key]] (get bindings key match)))
+         ;; little-trader fork: document the universe KG when configured.
+         (when (kg-db) kg-schema-blurb))))
 
 ;; --- Response parsing ---
 
@@ -170,44 +216,70 @@
 
 (defn- dispatch-query
   "Execute a Datalog query against db. Returns result text with optional truncation note."
-  [meta-db db parsed-args]
+  [meta-db db kg-db parsed-args]
   (let [q (:query parsed-args)]
     (if-let [err (validate-query q)]
       (str "Query rejected: " err)
-      (try
-        (let [limit      (min (or (:limit parsed-args) default-row-limit) max-row-limit)
-              rules      (artifacts/load-rules meta-db)
-              uses-rules (query-uses-rules? q)
-              _          (when (and uses-rules (nil? rules))
-                           (throw (ex-info "Query references rules (%) but no rules are loaded. Seed rules first via noumenon_artifact_seed."
-                                           {:query q})))
-              f          (future (try
-                                   (if (and rules uses-rules)
-                                     (d/q q db rules)
-                                     (d/q q db))
-                                   (catch OutOfMemoryError _
-                                     ::oom)))
-              result (deref f query-timeout-ms ::timeout)]
-          (condp = result
-            ::timeout (do (future-cancel f)
-                          "Query timed out after 30 seconds. Simplify the query or add more constraints.")
-            ::oom     "Query exhausted available memory. Simplify the query or add more constraints."
-            (let [taken  (vec (take (inc limit) result))
-                  capped (take limit taken)]
-              (str (format-column-header q)
-                   (pr-str (vec capped))
-                   (when (> (count taken) limit)
-                     (str "\n;; Showing " limit " of " limit "+ results. Refine your query or specify :limit."))))))
-        (catch Exception e
-          (let [msg (.getMessage e)]
-            (str "Query error: " msg
-                 (cond
-                   (str/includes? (str msg) "arity")
-                   "\nHint: check that the number of :in bindings matches the inputs provided."
-                   (str/includes? (str msg) "Could not find")
-                   "\nHint: attribute may be misspelled. Use {:tool :schema} to verify."
-                   :else
-                   "\nHint: simplify the query or use {:tool :schema} to check attribute names."))))))))
+      (cond
+        ;; little-trader fork: the universe-KG path (peer datalog, no rules).
+        (and (= "kg" (:db parsed-args)) kg-db)
+        (try
+          (let [limit  (min (or (:limit parsed-args) default-row-limit) max-row-limit)
+                f      (future (try (dp/q q kg-db)
+                                    (catch OutOfMemoryError _ ::oom)))
+                result (deref f query-timeout-ms ::timeout)]
+            (condp = result
+              ::timeout (do (future-cancel f)
+                            "KG query timed out after 30 seconds. Simplify or add constraints.")
+              ::oom     "KG query exhausted available memory. Simplify or add constraints."
+              (let [taken  (vec (take (inc limit) result))
+                    capped (take limit taken)]
+                (str (format-column-header q)
+                     (pr-str (vec capped))
+                     (when (> (count taken) limit)
+                       (str "\n;; Showing " limit " of " limit "+ results. Refine your query or specify :limit."))))))
+          (catch Exception e
+            (str "KG query error: " (.getMessage e)
+                 "\nHint: check attribute names against the universe-KG schema blurb in the system prompt.")))
+
+        (= "kg" (:db parsed-args))
+        "The universe KG is not configured on this daemon (NOUMENON_KG_URI unset or unreachable)."
+
+        :else
+        (try
+          (let [limit      (min (or (:limit parsed-args) default-row-limit) max-row-limit)
+                rules      (artifacts/load-rules meta-db)
+                uses-rules (query-uses-rules? q)
+                _          (when (and uses-rules (nil? rules))
+                             (throw (ex-info "Query references rules (%) but no rules are loaded. Seed rules first via noumenon_artifact_seed."
+                                             {:query q})))
+                f          (future (try
+                                     (if (and rules uses-rules)
+                                       (d/q q db rules)
+                                       (d/q q db))
+                                     (catch OutOfMemoryError _
+                                       ::oom)))
+                result (deref f query-timeout-ms ::timeout)]
+            (condp = result
+              ::timeout (do (future-cancel f)
+                            "Query timed out after 30 seconds. Simplify the query or add more constraints.")
+              ::oom     "Query exhausted available memory. Simplify the query or add more constraints."
+              (let [taken  (vec (take (inc limit) result))
+                    capped (take limit taken)]
+                (str (format-column-header q)
+                     (pr-str (vec capped))
+                     (when (> (count taken) limit)
+                       (str "\n;; Showing " limit " of " limit "+ results. Refine your query or specify :limit."))))))
+          (catch Exception e
+            (let [msg (.getMessage e)]
+              (str "Query error: " msg
+                   (cond
+                     (str/includes? (str msg) "arity")
+                     "\nHint: check that the number of :in bindings matches the inputs provided."
+                     (str/includes? (str msg) "Could not find")
+                     "\nHint: attribute may be misspelled. Use {:tool :schema} to verify."
+                     :else
+                     "\nHint: simplify the query or use {:tool :schema} to check attribute names.")))))))))
 
 (defn- dispatch-schema [db]
   (query/schema-summary db))
@@ -217,8 +289,8 @@
 
 (defn dispatch-tool
   "Dispatch a parsed tool call. Returns {:result string} or {:answer string}."
-  [meta-db db tool-call]
-  (let [handlers {:query   (fn [args] {:result (dispatch-query meta-db db args)})
+  [meta-db db kg-db tool-call]
+  (let [handlers {:query   (fn [args] {:result (dispatch-query meta-db db kg-db args)})
                   :schema  (fn [_] {:result (dispatch-schema db)})
                   :rules   (fn [_] {:result (dispatch-rules meta-db)})
                   :answer  (fn [args] {:answer (:text args "")})
@@ -307,7 +379,7 @@
       :else            messages)))
 
 (defn- next-state
-  [{:keys [meta-db db invoke-fn system-prompt]}
+  [{:keys [meta-db db kg-db invoke-fn system-prompt]}
    {:keys [messages steps iterations total-usage max-iterations]}]
   (if (>= iterations max-iterations)
     (let [state {:messages messages :steps steps
@@ -342,7 +414,7 @@
               reflection   (when reflect-call
                              (:args reflect-call))]
           (if answer-call
-            (let [{:keys [answer]} (dispatch-tool meta-db db answer-call)]
+            (let [{:keys [answer]} (dispatch-tool meta-db db kg-db answer-call)]
               {:done {:answer     answer
                       :reflection reflection
                       :steps      (conj steps (cond-> (assoc step :answer answer)
@@ -354,8 +426,8 @@
                   results    (if (empty? exec-calls)
                                [{:result "No tool calls to execute."}]
                                (if (<= (count exec-calls) 1)
-                                 [(dispatch-tool meta-db db (first exec-calls))]
-                                 (pmap #(dispatch-tool meta-db db %) exec-calls)))
+                                 [(dispatch-tool meta-db db kg-db (first exec-calls))]
+                                 (pmap #(dispatch-tool meta-db db kg-db %) exec-calls)))
                   combined   (if (= 1 (count results))
                                (:result (first results))
                                (->> results
@@ -420,7 +492,8 @@
                                embed-index]
                         :or   {max-iterations default-max-iterations}}]
   (let [sys-prompt (build-system-prompt meta-db db repo-name)
-        context    {:meta-db meta-db :db db :invoke-fn invoke-fn :system-prompt sys-prompt}
+        context    {:meta-db meta-db :db db :kg-db (kg-db)
+                    :invoke-fn invoke-fn :system-prompt sys-prompt}
         seed       (vector-seed embed-index question)
         hint       (model-hint meta-db embed-index question)
         user-msg   (cond-> question seed (str seed) hint (str hint))
